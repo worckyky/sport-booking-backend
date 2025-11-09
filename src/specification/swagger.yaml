@@ -1,0 +1,314 @@
+openapi: 3.0.0
+info:
+  title: Sport Booking Backend API
+  version: 1.0.0
+  description: API документация для Sport Booking Backend
+
+servers:
+  - url: http://localhost:3001
+    description: Development server
+
+tags:
+  - name: Authentication
+    description: Операции аутентификации
+  - name: Profile
+    description: Управление профилем пользователя
+  - name: Database
+    description: Работа с базой данных
+
+paths:
+  /auth/signin:
+    post:
+      summary: Вход пользователя по email и паролю
+      tags:
+        - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+                  example: password123
+      responses:
+        '200':
+          description: Успешный вход (cookie auth_token устанавливается автоматически)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: ID пользователя
+                    example: 550e8400-e29b-41d4-a716-446655440000
+        '400':
+          description: Ошибка валидации или неверные данные
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/signup:
+    post:
+      summary: Регистрация нового пользователя (автоматически авторизует)
+      tags:
+        - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+                  example: password123
+                role:
+                  type: string
+                  example: USER
+                name:
+                  type: string
+                  example: Иван Иванов
+                phone:
+                  type: string
+                  example: '+79001234567'
+      responses:
+        '200':
+          description: Успешная регистрация (cookie auth_token устанавливается автоматически)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: ID пользователя
+                    example: 550e8400-e29b-41d4-a716-446655440000
+        '400':
+          description: Ошибка валидации или пользователь уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/signout:
+    post:
+      summary: Выход пользователя
+      tags:
+        - Authentication
+      responses:
+        '200':
+          description: Успешный выход
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Signed out successfully
+        '400':
+          description: Ошибка при выходе
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/profile:
+    get:
+      summary: Получить профиль текущего пользователя (требуется cookie auth_token)
+      tags:
+        - Profile
+      security:
+        - CookieAuth: []
+      responses:
+        '200':
+          description: Профиль пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          description: Пользователь не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Профиль не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      summary: Обновить профиль пользователя (требуется cookie auth_token)
+      tags:
+        - Profile
+      security:
+        - CookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:
+                  type: string
+                name:
+                  type: string
+                phone:
+                  type: string
+      responses:
+        '200':
+          description: Профиль успешно обновлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          description: Пользователь не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /db/query:
+    post:
+      summary: Выполнить запрос к базе данных
+      tags:
+        - Database
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - table
+              properties:
+                table:
+                  type: string
+                  description: Название таблицы
+                  example: users
+                select:
+                  type: string
+                  description: Поля для выборки
+                  example: '*'
+                filters:
+                  type: object
+                  description: Фильтры для запроса
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Результат запроса
+        '400':
+          description: Ошибка в запросе
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          description: ID пользователя
+        email:
+          type: string
+          description: Email пользователя
+        role:
+          type: string
+          description: Роль пользователя
+        name:
+          type: string
+          description: Имя пользователя
+        phone:
+          type: string
+          description: Телефон пользователя
+        registration_date:
+          type: string
+          format: date-time
+          description: Дата регистрации
+        created_at:
+          type: string
+          format: date-time
+          description: Дата создания
+        updated_at:
+          type: string
+          format: date-time
+          description: Дата обновления
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Сообщение об ошибке
+
+  securitySchemes:
+    CookieAuth:
+      type: apiKey
+      in: cookie
+      name: auth_token
+      description: JWT токен в httpOnly cookie (устанавливается автоматически при логине/регистрации, действителен 7 дней)
+
