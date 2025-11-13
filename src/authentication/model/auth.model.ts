@@ -4,12 +4,18 @@ export enum USER_ROLE {
   ADMIN = 'ADMIN'
 }
 
+export enum EMAIL_STATUS {
+  VERIFIED = 'VERIFIED',
+  NOT_VERIFIED = 'NOT_VERIFIED'
+}
+
 export interface AuthRequest {
   email: string;
   password: string;
   name?: string;
   phone?: string;
   role?: USER_ROLE;
+  date_of_birth?: string;
 }
 
 export interface SignInRequest {
@@ -19,6 +25,7 @@ export interface SignInRequest {
 
 export interface SignInResponse {
   id: string;
+  email_verified: EMAIL_STATUS;
 }
 
 export interface UserProfile {
@@ -28,6 +35,8 @@ export interface UserProfile {
   registration_date?: string;
   phone?: string;
   email?: string;
+  email_verified: EMAIL_STATUS;
+  date_of_birth?: string;
   created_at: string;
   updated_at: string;
 }
@@ -43,4 +52,24 @@ export interface SignOutResponse {
 
 export interface AuthError {
   error: string;
+}
+
+export interface ResetPasswordRequest {
+  email: string;
+}
+
+export interface ResetPasswordResponse {
+  message: string;
+}
+
+export interface UpdatePasswordRequest {
+  password: string;
+  confirmPassword: string;
+}
+
+export interface UpdatePasswordWithTokenRequest {
+  password: string;
+  confirmPassword: string;
+  access_token: string;
+  refresh_token?: string;
 }

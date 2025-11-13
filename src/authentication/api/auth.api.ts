@@ -1,5 +1,5 @@
 import { SupabaseClient } from '@supabase/supabase-js';
-import { AuthRequest, AuthResponse, SignInRequest, SignInResponse, SignOutResponse, UserProfile } from '../model/auth.model';
+import { AuthRequest, AuthResponse, SignInRequest, SignInResponse, SignOutResponse, UserProfile, EMAIL_STATUS, ResetPasswordResponse, UpdatePasswordRequest } from '../model/auth.model';
 
 export class AuthAPI {
   constructor(private supabase: SupabaseClient) {}
@@ -18,21 +18,28 @@ export class AuthAPI {
       throw new Error('User not found');
     }
 
+    const emailVerified = data.user.email_confirmed_at ? EMAIL_STATUS.VERIFIED : EMAIL_STATUS.NOT_VERIFIED;
+
     return { 
       id: data.user.id,
-      accessToken: data.session.access_token
+      accessToken: data.session.access_token,
+      email_verified: emailVerified
     };
   }
 
   async signUp(credentials: AuthRequest): Promise<SignInResponse & { accessToken: string }> {
+    const emailRedirectTo = process.env.EMAIL_REDIRECT_URL || 'http://localhost:3000/confirm';
+    
     const { data, error } = await this.supabase.auth.signUp({
       email: credentials.email,
       password: credentials.password,
       options: {
+        emailRedirectTo: emailRedirectTo,
         data: {
           role: credentials.role,
           name: credentials.name,
-          phone: credentials.phone
+          phone: credentials.phone,
+          date_of_birth: credentials.date_of_birth
         }
       }
     });
@@ -41,13 +48,36 @@ export class AuthAPI {
       throw new Error(error.message);
     }
 
-    if (!data.user || !data.session) {
+    if (!data.user) {
       throw new Error('User registration failed');
     }
 
+    const emailVerified = data.user.email_confirmed_at ? EMAIL_STATUS.VERIFIED : EMAIL_STATUS.NOT_VERIFIED;
+
     return { 
       id: data.user.id,
-      accessToken: data.session.access_token
+      accessToken: data.session?.access_token || '',
+      email_verified: emailVerified
+    };
+  }
+
+  async confirmEmail(accessToken: string, refreshToken: string): Promise<{ accessToken: string; refreshToken: string }> {
+    const { data, error } = await this.supabase.auth.setSession({
+      access_token: accessToken,
+      refresh_token: refreshToken
+    });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    if (!data.session) {
+      throw new Error('Failed to create session');
+    }
+
+    return {
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token
     };
   }
 
@@ -72,12 +102,16 @@ export class AuthAPI {
       return null;
     }
 
+    const emailVerified = data.user.email_confirmed_at ? EMAIL_STATUS.VERIFIED : EMAIL_STATUS.NOT_VERIFIED;
+
     const profile: UserProfile = {
       id: data.user.id,
       email: data.user.email,
       role: data.user.user_metadata?.role,
       name: data.user.user_metadata?.name,
       phone: data.user.user_metadata?.phone,
+      date_of_birth: data.user.user_metadata?.date_of_birth,
+      email_verified: emailVerified,
       registration_date: data.user.created_at,
       created_at: data.user.created_at,
       updated_at: data.user.updated_at || data.user.created_at
@@ -91,7 +125,8 @@ export class AuthAPI {
       user_metadata: {
         role: updates.role,
         name: updates.name,
-        phone: updates.phone
+        phone: updates.phone,
+        date_of_birth: updates.date_of_birth
       }
     });
 
@@ -103,17 +138,51 @@ export class AuthAPI {
       throw new Error('User not found');
     }
 
+    const emailVerified = data.user.email_confirmed_at ? EMAIL_STATUS.VERIFIED : EMAIL_STATUS.NOT_VERIFIED;
+
     const profile: UserProfile = {
       id: data.user.id,
       email: data.user.email,
       role: data.user.user_metadata?.role,
       name: data.user.user_metadata?.name,
       phone: data.user.user_metadata?.phone,
+      date_of_birth: data.user.user_metadata?.date_of_birth,
+      email_verified: emailVerified,
       registration_date: data.user.created_at,
       created_at: data.user.created_at,
       updated_at: data.user.updated_at || data.user.created_at
     };
 
     return profile;
+  }
+
+  async requestPasswordReset(email: string): Promise<ResetPasswordResponse> {
+    const redirectTo = process.env.PASSWORD_RESET_REDIRECT_URL || 'http://localhost:3000/new-password';
+    
+    const { error } = await this.supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: redirectTo
+    });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return { message: 'Password reset email sent' };
+  }
+
+  async updatePassword(passwordData: UpdatePasswordRequest): Promise<{ message: string }> {
+    if (passwordData.password !== passwordData.confirmPassword) {
+      throw new Error('Passwords do not match');
+    }
+
+    const { error } = await this.supabase.auth.updateUser({
+      password: passwordData.password
+    });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return { message: 'Password updated successfully' };
   }
 }

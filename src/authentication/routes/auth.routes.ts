@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { AuthAPI } from '../api/auth.api';
-import { AuthRequest, SignInRequest, UserProfile } from '../model/auth.model';
+import { AuthRequest, SignInRequest, UserProfile, ResetPasswordRequest, UpdatePasswordWithTokenRequest } from '../model/auth.model';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { authMiddleware, AuthRequest as AuthReq } from '../middleware/auth.middleware';
 
@@ -19,6 +19,48 @@ export class AuthRoutes {
   }
 
   private initializeRoutes(): void {
+    this.router.get('/confirm', async (req: Request, res: Response) => {
+      try {
+        const { access_token, refresh_token } = req.query;
+
+        if (!access_token || !refresh_token) {
+          return res.status(400).json({ error: 'Invalid confirmation link' });
+        }
+
+        const data = await this.authAPI.confirmEmail(
+          access_token as string,
+          refresh_token as string
+        );
+
+        // Устанавливаем cookie с токеном на 7 дней
+        res.cookie('auth_token', data.accessToken, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'strict',
+          maxAge: 7 * 24 * 60 * 60 * 1000
+        });
+
+        // Получаем информацию о пользователе
+        const { data: userData, error: userError } = await this.supabase.auth.getUser(data.accessToken);
+
+        if (userError || !userData.user) {
+          return res.status(400).json({ error: 'Failed to get user data' });
+        }
+
+        // Возвращаем ID и статус верификации email
+        res.json({
+          id: userData.user.id,
+          email_verified: 'VERIFIED'
+        });
+      } catch (error) {
+        if (error instanceof Error) {
+          res.status(400).json({ error: error.message });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
     this.router.post('/signin', async (req: Request<{}, any, SignInRequest>, res: Response) => {
       try {
         const { email, password } = req.body;
@@ -37,8 +79,11 @@ export class AuthRoutes {
           maxAge: 7 * 24 * 60 * 60 * 1000 // 7 дней в миллисекундах
         });
 
-        // Возвращаем только ID
-        res.json({ id: data.id });
+        // Возвращаем ID и статус верификации email
+        res.json({ 
+          id: data.id,
+          email_verified: data.email_verified
+        });
       } catch (error) {
         if (error instanceof Error) {
           res.status(400).json({ error: error.message });
@@ -66,8 +111,11 @@ export class AuthRoutes {
           maxAge: 7 * 24 * 60 * 60 * 1000 // 7 дней в миллисекундах
         });
 
-        // Возвращаем только ID
-        res.json({ id: data.id });
+        // Возвращаем ID и статус верификации email
+        res.json({ 
+          id: data.id,
+          email_verified: data.email_verified
+        });
       } catch (error) {
         if (error instanceof Error) {
           res.status(400).json({ error: error.message });
@@ -169,6 +217,72 @@ export class AuthRoutes {
         };
 
         res.json(updatedProfile);
+      } catch (error) {
+        if (error instanceof Error) {
+          res.status(400).json({ error: error.message });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    this.router.post('/reset-password', async (req: Request<{}, any, ResetPasswordRequest>, res: Response) => {
+      try {
+        const { email } = req.body;
+
+        if (!email) {
+          return res.status(400).json({ error: 'Email is required' });
+        }
+
+        const data = await this.authAPI.requestPasswordReset(email);
+        res.json(data);
+      } catch (error) {
+        if (error instanceof Error) {
+          res.status(400).json({ error: error.message });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    this.router.post('/new-password', async (req: Request<{}, any, UpdatePasswordWithTokenRequest>, res: Response) => {
+      try {
+        const { password, confirmPassword, access_token, refresh_token } = req.body;
+
+        if (!password || !confirmPassword) {
+          return res.status(400).json({ error: 'Password and confirm password are required' });
+        }
+
+        if (!access_token) {
+          return res.status(400).json({ error: 'Access token is required' });
+        }
+
+        // Устанавливаем сессию с токенами из ссылки восстановления пароля
+        const { data: sessionData, error: sessionError } = await this.supabase.auth.setSession({
+          access_token: access_token,
+          refresh_token: refresh_token || ''
+        });
+
+        if (sessionError || !sessionData.session || !sessionData.user) {
+          return res.status(400).json({ error: 'Invalid or expired token' });
+        }
+
+        const data = await this.authAPI.updatePassword({ password, confirmPassword });
+
+        // Устанавливаем cookie с новым access_token для автоматической авторизации
+        res.cookie('auth_token', sessionData.session.access_token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'strict',
+          maxAge: 7 * 24 * 60 * 60 * 1000
+        });
+
+        // Возвращаем информацию о пользователе
+        res.json({
+          ...data,
+          id: sessionData.user.id,
+          email_verified: sessionData.user.email_confirmed_at ? 'VERIFIED' : 'NOT_VERIFIED'
+        });
       } catch (error) {
         if (error instanceof Error) {
           res.status(400).json({ error: error.message });

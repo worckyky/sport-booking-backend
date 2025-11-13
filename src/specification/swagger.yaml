@@ -52,6 +52,11 @@ paths:
                     type: string
                     description: ID пользователя
                     example: 550e8400-e29b-41d4-a716-446655440000
+                  email_verified:
+                    type: string
+                    enum: [VERIFIED, NOT_VERIFIED]
+                    description: Статус верификации email
+                    example: NOT_VERIFIED
         '400':
           description: Ошибка валидации или неверные данные
           content:
@@ -67,7 +72,11 @@ paths:
 
   /auth/signup:
     post:
-      summary: Регистрация нового пользователя (автоматически авторизует)
+      summary: Регистрация нового пользователя
+      description: |
+        Создает нового пользователя и отправляет письмо для подтверждения email.
+        После подтверждения email через ссылку в письме пользователь будет автоматически авторизован.
+        Если email не требует подтверждения, cookie auth_token устанавливается сразу.
       tags:
         - Authentication
       requestBody:
@@ -97,9 +106,13 @@ paths:
                 phone:
                   type: string
                   example: '+79001234567'
+                date_of_birth:
+                  type: string
+                  format: date
+                  example: '1990-01-15'
       responses:
         '200':
-          description: Успешная регистрация (cookie auth_token устанавливается автоматически)
+          description: Успешная регистрация (письмо подтверждения отправлено на email)
           content:
             application/json:
               schema:
@@ -109,8 +122,64 @@ paths:
                     type: string
                     description: ID пользователя
                     example: 550e8400-e29b-41d4-a716-446655440000
+                  email_verified:
+                    type: string
+                    enum: [VERIFIED, NOT_VERIFIED]
+                    description: Статус верификации email
+                    example: NOT_VERIFIED
         '400':
           description: Ошибка валидации или пользователь уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/confirm:
+    get:
+      summary: Подтверждение email пользователя
+      description: |
+        Этот эндпоинт вызывается при переходе по ссылке из письма подтверждения.
+        После успешного подтверждения устанавливается cookie auth_token и возвращаются данные пользователя.
+      tags:
+        - Authentication
+      parameters:
+        - in: query
+          name: access_token
+          required: true
+          schema:
+            type: string
+          description: Токен доступа из письма подтверждения
+        - in: query
+          name: refresh_token
+          required: true
+          schema:
+            type: string
+          description: Токен обновления из письма подтверждения
+      responses:
+        '200':
+          description: Успешное подтверждение email (cookie auth_token устанавливается автоматически)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: ID пользователя
+                    example: 550e8400-e29b-41d4-a716-446655440000
+                  email_verified:
+                    type: string
+                    enum: [VERIFIED]
+                    description: Статус верификации email (всегда VERIFIED после подтверждения)
+                    example: VERIFIED
+        '400':
+          description: Невалидная ссылка подтверждения
           content:
             application/json:
               schema:
@@ -140,6 +209,115 @@ paths:
                     example: Signed out successfully
         '400':
           description: Ошибка при выходе
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/reset-password:
+    post:
+      summary: Запросить восстановление пароля
+      description: |
+        Отправляет письмо с ссылкой для восстановления пароля на указанный email.
+        Ссылка ведет на страницу /new-password с токеном в параметрах.
+      tags:
+        - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+      responses:
+        '200':
+          description: Письмо с инструкциями отправлено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Password reset email sent
+        '400':
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/new-password:
+    post:
+      summary: Установить новый пароль
+      description: |
+        Устанавливает новый пароль пользователя после перехода по ссылке восстановления.
+        Требуется access_token из ссылки восстановления пароля.
+      tags:
+        - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - password
+                - confirmPassword
+                - access_token
+              properties:
+                password:
+                  type: string
+                  format: password
+                  example: newPassword123
+                confirmPassword:
+                  type: string
+                  format: password
+                  example: newPassword123
+                access_token:
+                  type: string
+                  description: Access token из URL после редиректа Supabase
+                refresh_token:
+                  type: string
+                  description: Refresh token из URL после редиректа Supabase (опционально)
+      responses:
+        '200':
+          description: Пароль успешно обновлен (cookie auth_token устанавливается автоматически)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Password updated successfully
+                  id:
+                    type: string
+                    description: ID пользователя
+                  email_verified:
+                    type: string
+                    enum: [VERIFIED, NOT_VERIFIED]
+                    description: Статус верификации email
+        '400':
+          description: Ошибка валидации или недействительный токен
           content:
             application/json:
               schema:
@@ -203,6 +381,9 @@ paths:
                   type: string
                 phone:
                   type: string
+                date_of_birth:
+                  type: string
+                  format: date
       responses:
         '200':
           description: Профиль успешно обновлен
@@ -276,6 +457,10 @@ components:
         email:
           type: string
           description: Email пользователя
+        email_verified:
+          type: string
+          enum: [VERIFIED, NOT_VERIFIED]
+          description: Статус верификации email
         role:
           type: string
           description: Роль пользователя
@@ -285,6 +470,10 @@ components:
         phone:
           type: string
           description: Телефон пользователя
+        date_of_birth:
+          type: string
+          format: date
+          description: Дата рождения пользователя
         registration_date:
           type: string
           format: date-time
