@@ -13,6 +13,8 @@ tags:
     description: Операции аутентификации
   - name: Profile
     description: Управление профилем пользователя
+  - name: YClients
+    description: Работа с данными YClients (только для пользователей с ролью CAMPAIGN)
   - name: Database
     description: Работа с базой данных
 
@@ -404,6 +406,117 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /yclients:
+    get:
+      summary: Получить YClients данные текущего пользователя
+      description: Доступно только пользователям с ролью CAMPAIGN
+      tags:
+        - YClients
+      security:
+        - CookieAuth: []
+      responses:
+        '200':
+          description: YClients данные пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/YClientsInfoResponse'
+        '401':
+          description: Пользователь не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Доступ запрещен (пользователь не имеет роли CAMPAIGN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: YClients данные не найдены
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      summary: Обновить YClients данные текущего пользователя
+      description: |
+        Доступно только пользователям с ролью CAMPAIGN.
+        Выполняет запрос к YClients API для получения user_token по логину и паролю,
+        затем сохраняет партнёрский и пользовательский токены.
+      tags:
+        - YClients
+      security:
+        - CookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - ycPartnerToken
+                - ycLogin
+                - ycPassword
+                - yclientsCompanyId
+              properties:
+                ycPartnerToken:
+                  type: string
+                  description: Партнёрский токен YClients
+                  example: '5kuyruparw7h9xnsyep8'
+                ycLogin:
+                  type: string
+                  description: Логин пользователя в YClients
+                  example: 'user@example.com'
+                ycPassword:
+                  type: string
+                  format: password
+                  description: Пароль пользователя в YClients
+                  example: 'password123'
+                yclientsCompanyId:
+                  type: string
+                  description: ID компании в YClients
+                  example: '123456'
+      responses:
+        '200':
+          description: YClients данные успешно обновлены
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/YClientsInfoResponse'
+        '400':
+          description: Ошибка валидации или ошибка авторизации в YClients (Invalid login or password)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Пользователь не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Доступ запрещен (пользователь не имеет роли CAMPAIGN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /db/query:
     post:
       summary: Выполнить запрос к базе данных
@@ -486,6 +599,19 @@ components:
           type: string
           format: date-time
           description: Дата обновления
+
+    YClientsInfoResponse:
+      type: object
+      properties:
+        ycPartnerToken:
+          type: string
+          description: Партнёрский токен YClients
+        ycUserToken:
+          type: string
+          description: Пользовательский токен YClients
+        yclientsCompanyId:
+          type: string
+          description: ID компании в YClients
 
     Error:
       type: object

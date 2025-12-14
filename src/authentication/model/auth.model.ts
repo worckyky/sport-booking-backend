@@ -9,6 +9,7 @@ export enum EMAIL_STATUS {
   NOT_VERIFIED = 'NOT_VERIFIED'
 }
 
+
 export interface AuthRequest {
   email: string;
   password: string;
@@ -27,6 +28,8 @@ export interface SignInResponse {
   id: string;
   email_verified: EMAIL_STATUS;
 }
+
+
 
 export interface UserProfile {
   id: string;
