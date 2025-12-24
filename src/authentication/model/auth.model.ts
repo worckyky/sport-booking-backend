@@ -40,6 +40,7 @@ export interface UserProfile {
   email?: string;
   email_verified: EMAIL_STATUS;
   date_of_birth?: string;
+  campaign_id?: string;
   created_at: string;
   updated_at: string;
 }

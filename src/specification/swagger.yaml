@@ -13,10 +13,12 @@ tags:
     description: Операции аутентификации
   - name: Profile
     description: Управление профилем пользователя
-  - name: YClients
-    description: Работа с данными YClients (только для пользователей с ролью CAMPAIGN)
+  - name: Campaign
+    description: Управление кампаниями спортивных объектов
   - name: Database
     description: Работа с базой данных
+  - name: Health
+    description: Проверка состояния сервера
 
 paths:
   /auth/signin:
@@ -406,21 +408,58 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /yclients:
+  /campaign:
     get:
-      summary: Получить YClients данные текущего пользователя
-      description: Доступно только пользователям с ролью CAMPAIGN
+      summary: Получить все кампании (публичный эндпоинт)
       tags:
-        - YClients
-      security:
-        - CookieAuth: []
+        - Campaign
       responses:
         '200':
-          description: YClients данные пользователя
+          description: Список всех кампаний
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/YClientsInfoResponse'
+                type: array
+                items:
+                  $ref: '#/components/schemas/Campaign'
+        '400':
+          description: Ошибка при получении кампаний
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      summary: Создать новую кампанию (требуется cookie auth_token и роль CAMPAIGN)
+      tags:
+        - Campaign
+      security:
+        - CookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCampaignRequest'
+      responses:
+        '201':
+          description: Кампания успешно создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Campaign'
+        '400':
+          description: Ошибка валидации или создания кампании
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           description: Пользователь не авторизован
           content:
@@ -428,13 +467,45 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '403':
-          description: Доступ запрещен (пользователь не имеет роли CAMPAIGN)
+          description: Доступ запрещен - требуется роль CAMPAIGN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /campaign/{id}:
+    get:
+      summary: Получить данные кампании по ID (публичный эндпоинт)
+      tags:
+        - Campaign
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: ID кампании
+      responses:
+        '200':
+          description: Данные кампании
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Campaign'
+        '400':
+          description: Ошибка при получении кампании
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: YClients данные не найдены
+          description: Кампания не найдена
           content:
             application/json:
               schema:
@@ -447,53 +518,33 @@ paths:
                 $ref: '#/components/schemas/Error'
 
     put:
-      summary: Обновить YClients данные текущего пользователя
-      description: |
-        Доступно только пользователям с ролью CAMPAIGN.
-        Выполняет запрос к YClients API для получения user_token по логину и паролю,
-        затем сохраняет партнёрский и пользовательский токены.
+      summary: Обновить кампанию (требуется cookie auth_token и роль CAMPAIGN)
       tags:
-        - YClients
+        - Campaign
       security:
         - CookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: ID кампании
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - ycPartnerToken
-                - ycLogin
-                - ycPassword
-                - yclientsCompanyId
-              properties:
-                ycPartnerToken:
-                  type: string
-                  description: Партнёрский токен YClients
-                  example: '5kuyruparw7h9xnsyep8'
-                ycLogin:
-                  type: string
-                  description: Логин пользователя в YClients
-                  example: 'user@example.com'
-                ycPassword:
-                  type: string
-                  format: password
-                  description: Пароль пользователя в YClients
-                  example: 'password123'
-                yclientsCompanyId:
-                  type: string
-                  description: ID компании в YClients
-                  example: '123456'
+              $ref: '#/components/schemas/UpdateCampaignRequest'
       responses:
         '200':
-          description: YClients данные успешно обновлены
+          description: Кампания успешно обновлена
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/YClientsInfoResponse'
+                $ref: '#/components/schemas/Campaign'
         '400':
-          description: Ошибка валидации или ошибка авторизации в YClients (Invalid login or password)
+          description: Ошибка валидации или обновления кампании
           content:
             application/json:
               schema:
@@ -505,7 +556,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '403':
-          description: Доступ запрещен (пользователь не имеет роли CAMPAIGN)
+          description: Доступ запрещен - требуется роль CAMPAIGN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Кампания не найдена или не обновлена
           content:
             application/json:
               schema:
@@ -516,6 +573,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+
+    delete:
+      summary: Удалить кампанию (требуется cookie auth_token и роль CAMPAIGN)
+      tags:
+        - Campaign
+      security:
+        - CookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: ID кампании
+      responses:
+        '204':
+          description: Кампания успешно удалена
+        '400':
+          description: Ошибка при удалении кампании
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Пользователь не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Доступ запрещен - требуется роль CAMPAIGN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /health:
+    get:
+      summary: Проверка состояния сервера
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Сервер работает нормально
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: '2025-12-14T10:30:00.000Z'
 
   /db/query:
     post:
@@ -587,6 +706,9 @@ components:
           type: string
           format: date
           description: Дата рождения пользователя
+        campaign_id:
+          type: string
+          description: ID кампании (только для пользователей с ролью CAMPAIGN)
         registration_date:
           type: string
           format: date-time
@@ -600,25 +722,308 @@ components:
           format: date-time
           description: Дата обновления
 
-    YClientsInfoResponse:
-      type: object
-      properties:
-        ycPartnerToken:
-          type: string
-          description: Партнёрский токен YClients
-        ycUserToken:
-          type: string
-          description: Пользовательский токен YClients
-        yclientsCompanyId:
-          type: string
-          description: ID компании в YClients
-
     Error:
       type: object
       properties:
         error:
           type: string
           description: Сообщение об ошибке
+
+    Campaign:
+      type: object
+      properties:
+        id:
+          type: string
+          description: ID кампании
+        userId:
+          type: string
+          description: ID владельца кампании
+        name:
+          type: string
+          description: Название кампании
+        description:
+          type: string
+          nullable: true
+          description: Описание кампании
+        location:
+          $ref: '#/components/schemas/Location'
+        contacts:
+          $ref: '#/components/schemas/Contacts'
+        workingTimetable:
+          $ref: '#/components/schemas/WorkingTimetable'
+        socialsLinks:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/SocialLink'
+          description: Ссылки на социальные сети
+        paymentMethods:
+          type: array
+          nullable: true
+          items:
+            type: string
+            enum: [MONEY, CARD, SBP]
+          description: Методы оплаты
+        facilities:
+          type: array
+          nullable: true
+          items:
+            type: string
+            enum: [PARKING, SHOWER, LOCKER_ROOM, WIFI, LIGHTING, AIR_CONDITIONING, CAFE, RENTAL, VIDEO_SURVEILLANCE]
+          description: Удобства
+        sports:
+          type: array
+          nullable: true
+          items:
+            type: string
+            enum: [FOOTBALL, BASKETBALL, TENNIS, VOLLEYBALL]
+          description: Виды спорта
+        media:
+          $ref: '#/components/schemas/Media'
+        createdAt:
+          type: string
+          format: date-time
+          description: Дата создания
+        updatedAt:
+          type: string
+          format: date-time
+          description: Дата обновления
+
+    CreateCampaignRequest:
+      type: object
+      required:
+        - name
+        - description
+        - location
+        - contacts
+        - workingTimetable
+      properties:
+        name:
+          type: string
+          description: Название кампании
+          example: Спортивный центр "Олимп"
+        description:
+          type: string
+          description: Описание кампании
+          example: Современный спортивный центр с футбольными полями
+        location:
+          $ref: '#/components/schemas/Location'
+        contacts:
+          $ref: '#/components/schemas/Contacts'
+        workingTimetable:
+          $ref: '#/components/schemas/WorkingTimetable'
+        socialsLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/SocialLink'
+          description: Ссылки на социальные сети
+        paymentMethods:
+          type: array
+          items:
+            type: string
+            enum: [MONEY, CARD, SBP]
+          description: Методы оплаты
+          example: [CARD, SBP]
+        facilities:
+          type: array
+          items:
+            type: string
+            enum: [PARKING, SHOWER, LOCKER_ROOM, WIFI, LIGHTING, AIR_CONDITIONING, CAFE, RENTAL, VIDEO_SURVEILLANCE]
+          description: Удобства
+          example: [PARKING, SHOWER, WIFI]
+        sports:
+          type: array
+          items:
+            type: string
+            enum: [FOOTBALL, BASKETBALL, TENNIS, VOLLEYBALL]
+          description: Виды спорта
+          example: [FOOTBALL, BASKETBALL]
+        media:
+          $ref: '#/components/schemas/Media'
+
+    UpdateCampaignRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Название кампании
+        description:
+          type: string
+          description: Описание кампании
+        location:
+          $ref: '#/components/schemas/Location'
+        contacts:
+          $ref: '#/components/schemas/Contacts'
+        workingTimetable:
+          $ref: '#/components/schemas/WorkingTimetable'
+        socialsLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/SocialLink'
+          description: Ссылки на социальные сети
+        paymentMethods:
+          type: array
+          items:
+            type: string
+            enum: [MONEY, CARD, SBP]
+          description: Методы оплаты
+        facilities:
+          type: array
+          items:
+            type: string
+            enum: [PARKING, SHOWER, LOCKER_ROOM, WIFI, LIGHTING, AIR_CONDITIONING, CAFE, RENTAL, VIDEO_SURVEILLANCE]
+          description: Удобства
+        sports:
+          type: array
+          items:
+            type: string
+            enum: [FOOTBALL, BASKETBALL, TENNIS, VOLLEYBALL]
+          description: Виды спорта
+        media:
+          $ref: '#/components/schemas/Media'
+
+    Location:
+      type: object
+      nullable: true
+      required:
+        - city
+        - street
+        - house
+        - coordinates
+      properties:
+        city:
+          type: string
+          description: Город
+          example: Москва
+        street:
+          type: string
+          description: Улица
+          example: Ленина
+        house:
+          type: string
+          description: Дом
+          example: 10А
+        coordinates:
+          type: string
+          description: Координаты
+          example: '55.751244, 37.618423'
+
+    Contacts:
+      type: object
+      nullable: true
+      required:
+        - phone
+        - email
+        - site
+      properties:
+        phone:
+          type: string
+          description: Телефон
+          example: '+79001234567'
+        email:
+          type: string
+          format: email
+          description: Email
+          example: info@sportcenter.ru
+        site:
+          type: string
+          description: Веб-сайт
+          example: https://sportcenter.ru
+
+    WorkingTimetable:
+      type: object
+      nullable: true
+      required:
+        - monday
+        - tuesday
+        - wednesday
+        - thursday
+        - friday
+        - saturday
+        - sunday
+      properties:
+        monday:
+          $ref: '#/components/schemas/TimeSlot'
+        tuesday:
+          $ref: '#/components/schemas/TimeSlot'
+        wednesday:
+          $ref: '#/components/schemas/TimeSlot'
+        thursday:
+          $ref: '#/components/schemas/TimeSlot'
+        friday:
+          $ref: '#/components/schemas/TimeSlot'
+        saturday:
+          $ref: '#/components/schemas/TimeSlot'
+        sunday:
+          $ref: '#/components/schemas/TimeSlot'
+
+    TimeSlot:
+      type: object
+      required:
+        - from
+        - to
+      properties:
+        from:
+          type: string
+          description: Время начала работы
+          example: '08:00'
+        to:
+          type: string
+          description: Время окончания работы
+          example: '22:00'
+
+    SocialLink:
+      type: object
+      required:
+        - link_type
+        - link
+      properties:
+        link_type:
+          type: string
+          enum: [VK, TELEGRAM, WHATS_APP]
+          description: Тип социальной сети
+          example: TELEGRAM
+        link:
+          type: string
+          description: Ссылка на социальную сеть
+          example: https://t.me/sportcenter
+
+    Media:
+      type: object
+      nullable: true
+      required:
+        - main_src
+        - description
+        - extra_media
+      properties:
+        main_src:
+          type: string
+          description: Главное изображение
+          example: https://example.com/main-image.jpg
+        description:
+          type: string
+          description: Описание медиа
+          example: Главное фото спортивного центра
+        extra_media:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExtraMedia'
+          description: Дополнительные медиафайлы
+
+    ExtraMedia:
+      type: object
+      required:
+        - src
+        - description
+      properties:
+        src:
+          type: string
+          description: URL медиафайла
+          example: https://example.com/extra-image.jpg
+        description:
+          type: string
+          description: Описание медиафайла
+          example: Фотография футбольного поля
 
   securitySchemes:
     CookieAuth:

@@ -75,32 +75,6 @@ export class AuthAPI {
       throw new Error('Failed to create session');
     }
 
-    // Создание записи в yclients_info для пользователей с ролью CAMPAIGN после подтверждения email
-    if (data.user.user_metadata?.role === USER_ROLE.CAMPAIGN) {
-      // Проверяем, существует ли уже запись
-      const { data: existingData } = await this.supabase
-        .from('yclients_info')
-        .select('id')
-        .eq('user_id', data.user.id)
-        .single();
-
-      // Создаем запись только если её еще нет
-      if (!existingData) {
-        const { error: ycError } = await this.supabase
-          .from('yclients_info')
-          .insert({
-            user_id: data.user.id,
-            yc_token: '',
-            yc_user_id: ''
-          });
-
-        if (ycError) {
-          console.error('Failed to create YClients info:', ycError.message);
-          // Не бросаем ошибку, запись можно создать позже через отдельный эндпоинт
-        }
-      }
-    }
-
     return {
       accessToken: data.session.access_token,
       refreshToken: data.session.refresh_token

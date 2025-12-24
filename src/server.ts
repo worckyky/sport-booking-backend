@@ -5,7 +5,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.config';
 import { AuthRoutes } from './authentication/routes/auth.routes';
-import yclientsRoutes from './yclients/routes/yclients.routes';
+import campaignRoutes from './campaign/routes/campaign.routes';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -70,7 +70,7 @@ app.get('/api-docs', swaggerUi.setup(swaggerSpec, {
 
 // Use routes
 app.use('/auth', authRoutes.getRouter());
-app.use('/yclients', yclientsRoutes);
+app.use('/campaign', campaignRoutes);
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response<HealthResponse>) => {

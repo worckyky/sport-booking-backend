@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { AuthAPI } from '../api/auth.api';
-import { AuthRequest, SignInRequest, UserProfile, ResetPasswordRequest, UpdatePasswordWithTokenRequest } from '../model/auth.model';
+import { AuthRequest, SignInRequest, UserProfile, ResetPasswordRequest, UpdatePasswordWithTokenRequest, EMAIL_STATUS } from '../model/auth.model';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { authMiddleware, AuthRequest as AuthReq } from '../middleware/auth.middleware';
 
@@ -161,16 +161,32 @@ export class AuthRoutes {
           return res.status(404).json({ error: 'User profile not found' });
         }
 
-        const profile = {
+        const emailVerified = data.user.email_confirmed_at ? EMAIL_STATUS.VERIFIED : EMAIL_STATUS.NOT_VERIFIED;
+
+        const profile: UserProfile = {
           id: data.user.id,
           email: data.user.email,
           role: data.user.user_metadata?.role,
           name: data.user.user_metadata?.name,
           phone: data.user.user_metadata?.phone,
+          email_verified: emailVerified,
           registration_date: data.user.created_at,
           created_at: data.user.created_at,
           updated_at: data.user.updated_at || data.user.created_at
         };
+
+        // Если пользователь имеет роль CAMPAIGN, получаем ID кампании
+        if (data.user.user_metadata?.role === 'CAMPAIGN') {
+          const { data: campaignData, error: campaignError } = await this.supabaseAdmin
+            .from('campaign_info')
+            .select('id')
+            .eq('user_id', userId)
+            .single();
+
+          if (!campaignError && campaignData) {
+            profile.campaign_id = campaignData.id;
+          }
+        }
 
         res.json(profile);
       } catch (error) {
