@@ -51,6 +51,7 @@ export class CampaignAPI {
         user_id: userId,
         name: campaignData.name,
         description: campaignData.description,
+        short_description: campaignData.shortDescription || requestData.short_description || null,
         location: campaignData.location,
         contacts: campaignData.contacts,
         working_timetable: campaignData.workingTimetable || requestData.working_timetable,
@@ -84,6 +85,13 @@ export class CampaignAPI {
 
     if (campaignData.name !== undefined) updateData.name = campaignData.name;
     if (campaignData.description !== undefined) updateData.description = campaignData.description;
+    
+    if (campaignData.shortDescription !== undefined) {
+      updateData.short_description = campaignData.shortDescription;
+    } else if (requestData.short_description !== undefined) {
+      updateData.short_description = requestData.short_description;
+    }
+    
     if (campaignData.location !== undefined) updateData.location = campaignData.location;
     if (campaignData.contacts !== undefined) updateData.contacts = campaignData.contacts;
     
@@ -148,6 +156,7 @@ export class CampaignAPI {
       userId: campaign.user_id,
       name: campaign.name,
       description: campaign.description,
+      shortDescription: campaign.short_description,
       location: campaign.location,
       contacts: campaign.contacts,
       workingTimetable: campaign.working_timetable,

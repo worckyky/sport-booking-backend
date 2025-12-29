@@ -45,6 +45,7 @@ export interface Contacts {
 export interface TimeSlot {
   from: string;
   to: string;
+  isWeekend: boolean;
 }
 
 export interface WorkingTimetable {
@@ -78,6 +79,7 @@ export interface Campaign {
   user_id: string;
   name: string;
   description: string | null;
+  short_description: string | null;
   location: Location | null;
   contacts: Contacts | null;
   working_timetable: WorkingTimetable | null;
@@ -95,6 +97,7 @@ export interface CampaignResponse {
   userId: string;
   name: string;
   description: string | null;
+  shortDescription: string | null;
   location: Location | null;
   contacts: Contacts | null;
   workingTimetable: WorkingTimetable | null;
@@ -110,6 +113,7 @@ export interface CampaignResponse {
 export interface CreateCampaignRequest {
   name: string;
   description: string;
+  shortDescription?: string;
   location: Location;
   contacts: Contacts;
   workingTimetable: WorkingTimetable;
@@ -123,6 +127,7 @@ export interface CreateCampaignRequest {
 export interface UpdateCampaignRequest {
   name?: string;
   description?: string;
+  shortDescription?: string;
   location?: Location;
   contacts?: Contacts;
   workingTimetable?: WorkingTimetable;
