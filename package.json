@@ -4,7 +4,7 @@
   "description": "Backend proxy for Supabase",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && mkdir -p dist/specification && cp src/specification/swagger.yaml dist/specification/",
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "dev:watch": "nodemon --exec ts-node src/server.ts",
