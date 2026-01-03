@@ -32,8 +32,8 @@ RUN npm ci --only=production && npm cache clean --force
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
 
-# Copy swagger specification file
-COPY --from=builder /app/src/specification/swagger.yaml ./dist/specification/swagger.yaml
+# Copy swagger specification directory
+COPY --from=builder /app/src/specification ./dist/specification
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs
