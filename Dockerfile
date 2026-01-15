@@ -4,12 +4,15 @@ FROM node:18-alpine AS builder
 # Set working directory
 WORKDIR /app
 
+# Force dev deps install in build stage (Coolify may set NODE_ENV=production)
+ENV NODE_ENV=development
+
 # Copy package files
 COPY package*.json ./
 COPY tsconfig.json ./
 
 # Install all dependencies (including dev dependencies for build)
-RUN npm ci
+RUN npm ci --include=dev
 
 # Copy source code
 COPY src ./src
@@ -28,7 +31,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install only production dependencies
-RUN npm ci --only=production && npm cache clean --force
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
