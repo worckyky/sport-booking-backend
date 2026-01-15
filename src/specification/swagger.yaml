@@ -161,12 +161,6 @@ paths:
           schema:
             type: string
           description: Токен доступа из письма подтверждения
-        - in: query
-          name: refresh_token
-          required: true
-          schema:
-            type: string
-          description: Токен обновления из письма подтверждения
       responses:
         '200':
           description: Успешное подтверждение email (cookie auth_token устанавливается автоматически)
@@ -257,7 +251,7 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: Password reset email sent
+                    example: Password reset requested
         '400':
           description: Ошибка валидации
           content:
@@ -300,10 +294,10 @@ paths:
                   example: newPassword123
                 access_token:
                   type: string
-                  description: Access token из URL после редиректа Supabase
+                  description: Токен восстановления пароля (reset token)
                 refresh_token:
                   type: string
-                  description: Refresh token из URL после редиректа Supabase (опционально)
+                  description: Не используется (оставлено для совместимости)
       responses:
         '200':
           description: Пароль успешно обновлен (cookie auth_token устанавливается автоматически)

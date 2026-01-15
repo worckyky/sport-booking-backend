@@ -1,6 +1,6 @@
 # Sport Booking Backend
 
-Простой Node.js прокси-сервер для Supabase на TypeScript.
+Node.js backend на TypeScript с прямым подключением к PostgreSQL.
 
 ## Деплой
 
@@ -48,80 +48,54 @@ npm run docker:build
 ### Альтернативные команды
 ```bash
 # Запуск с логами
-docker-compose up
+docker-compose -f docker-compose-dev.yml up
 
 # Запуск в фоне
-docker-compose up -d
+docker-compose -f docker-compose-dev.yml up -d
 
 # Остановка и удаление контейнеров
-docker-compose down
+docker-compose -f docker-compose-dev.yml down
 
 # Пересборка и запуск
-docker-compose up --build -d
+docker-compose -f docker-compose-dev.yml up --build -d
+```
+
+### Локальная PostgreSQL (инициализация схемы)
+
+В `docker-compose-dev.yml` добавлен сервис `db` (PostgreSQL). При **первом** старте контейнера он автоматически применит схему из `migrations/001_init.sql`.
+
+### Миграции через Umzug
+
+Чтобы применить миграции вручную к базе из `DATABASE_URL`:
+
+```bash
+npm run migrate
 ```
 
 ## Переменные окружения
 
-Создайте файл `.env` на основе `env-example.txt`:
+Создайте файл `.env`:
 
 ```
-# Supabase Configuration
-SUPABASE_URL=http://127.0.0.1:54321
-SUPABASE_ANON_KEY=your-anon-key-here
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+# Database
+DATABASE_URL=postgres://user:password@localhost:5432/sport_booking
+# true если вы подключаетесь к Postgres по SSL (например managed)
+DB_SSL=false
+
+# Auth
+JWT_SECRET=change-me-to-a-long-random-secret
 
 # Server Configuration
 PORT=3001
 FRONTEND_URL=http://localhost:3000
 
-# Email Configuration
-EMAIL_REDIRECT_URL=http://localhost:3000/auth/confirm
-PASSWORD_RESET_REDIRECT_URL=http://localhost:3000/new-password
+# CORS Configuration
+ALLOWED_ORIGINS=http://localhost:3000
 ```
 
-## Настройка SMTP для отправки email
+## Миграции базы
 
-Для отправки писем подтверждения регистрации необходимо настроить SMTP в Supabase.
-
-### Если Supabase запущен из отдельного репозитория
-
-1. Перейдите в директорию вашего Supabase проекта
-2. Откройте файл `supabase/config.toml`
-3. Найдите секцию `[auth.email]` и настройте SMTP:
-
-```toml
-[auth.email]
-enable_signup = true
-enable_confirmations = true
-
-[auth.email.smtp]
-enabled = true
-host = "smtp.gmail.com"
-port = 587
-user = "your-email@gmail.com"
-pass = "your-app-password"
-admin_email = "your-email@gmail.com"
-sender_name = "Sport Booking"
-```
-
-4. Перезапустите Supabase:
-```bash
-supabase stop
-supabase start
-```
-
-### Production (Supabase Cloud)
-
-1. Перейдите в Dashboard -> Project Settings -> Auth -> SMTP Settings
-2. Включите "Enable Custom SMTP"
-3. Заполните настройки SMTP провайдера
-4. Сохраните изменения
-
-**Важно**: 
-- При локальной разработке email будут доступны в Inbucket по адресу http://localhost:54324
-- Для Gmail нужно использовать App Password, а не обычный пароль
-- В переменной `EMAIL_REDIRECT_URL` укажите URL вашего frontend для редиректа после подтверждения email
-- В переменной `PASSWORD_RESET_REDIRECT_URL` укажите URL вашего frontend для редиректа при восстановлении пароля
+В репозитории добавлена миграция схемы: `migrations/001_init.sql`.
 
 ## API Endpoints
 
@@ -155,20 +129,18 @@ Content-Type: application/json
 ```
 
 При успешной регистрации:
-1. Создается пользователь в Supabase Auth
-2. Автоматически добавляется запись в таблицу `users` PostgreSQL
-3. Заполняются поля: id, email, name, phone, registration_date, role
+1. Создается пользователь в таблице `users` PostgreSQL
+2. Устанавливается cookie `auth_token` (JWT) на 7 дней
+3. Возвращается `id` и статус `email_verified`
 
 #### Получение профиля
 ```
 GET /auth/profile
-Headers: user-id: <user-uuid>
 ```
 
 #### Обновление профиля
 ```
 PUT /auth/profile
-Headers: user-id: <user-uuid>
 Content-Type: application/json
 
 {
@@ -207,22 +179,11 @@ Content-Type: application/json
 }
 ```
 
-**Важно**: После перехода по ссылке из письма, Supabase редиректит на ваш frontend (`/new-password`) с параметрами `access_token` и `refresh_token` в URL. Извлеките эти токены из URL и передайте в запросе.
-
-При успешной смене пароля:
-1. Пароль обновляется в Supabase
-2. Cookie `auth_token` устанавливается автоматически - пользователь сразу авторизован
-3. Возвращается ID пользователя и статус верификации email
-4. Можно сразу переходить на защищенные страницы (например, `/profile`)
+**Важно**: эндпоинт `/auth/reset-password` возвращает одноразовый `access_token` (reset token). Его нужно передать в `/auth/new-password` как `access_token`. `refresh_token` больше не используется и оставлен только для обратной совместимости.
 
 ### Database Queries
 ```
 POST /db/query
-```
-
-### Generic Supabase Proxy
-```
-ALL /supabase/*
 ```
 
 ## Docker

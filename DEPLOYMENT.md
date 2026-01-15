@@ -8,7 +8,7 @@
 
 - Coolify instance
 - GitHub/GitLab репозиторий
-- Supabase проект
+- PostgreSQL база данных (managed или своя)
 
 ## Шаги деплоя
 
@@ -39,10 +39,12 @@ Coolify автоматически настроит:
 В разделе Environment Variables добавьте следующие переменные:
 
 ```env
-# Supabase Configuration
-SUPABASE_URL=https://your-project-ref.supabase.co
-SUPABASE_ANON_KEY=your-anon-key-here
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
+# Database
+DATABASE_URL=postgres://user:password@db-host:5432/sport_booking
+DB_SSL=true
+
+# Auth
+JWT_SECRET=change-me-to-a-long-random-secret
 
 # Server Configuration
 PORT=3001
@@ -51,20 +53,8 @@ NODE_ENV=production
 # CORS Configuration
 ALLOWED_ORIGINS=https://stage.walknplay.ru,https://walknplay.ru
 
-# Email Redirect URLs
-EMAIL_REDIRECT_URL=https://stage.walknplay.ru/confirm
 FRONTEND_URL=https://stage.walknplay.ru
-PASSWORD_RESET_REDIRECT_URL=https://stage.walknplay.ru/new-password
 ```
-
-#### Где взять ключи Supabase:
-
-1. Откройте ваш проект в [Supabase Dashboard](https://app.supabase.com)
-2. Перейдите в Settings → API
-3. Скопируйте:
-   - `URL` → `SUPABASE_URL`
-   - `anon/public` key → `SUPABASE_ANON_KEY`
-   - `service_role` key → `SUPABASE_SERVICE_ROLE_KEY`
 
 ### 5. Запуск деплоя
 
@@ -147,7 +137,7 @@ Coolify автоматически мониторит healthcheck endpoint:
 
 1. Проверьте логи в Coolify
 2. Убедитесь что все environment variables заданы
-3. Проверьте что Supabase credentials корректны
+3. Проверьте что `DATABASE_URL` корректный и база доступна из контейнера
 
 ### CORS ошибки
 
@@ -171,8 +161,7 @@ ALLOWED_ORIGINS=https://stage.walknplay.ru,https://walknplay.ru
 ## Безопасность
 
 - Никогда не коммитьте `.env` файл в git
-- Используйте strong secrets для `SUPABASE_SERVICE_ROLE_KEY`
-- Регулярно ротируйте ключи в Supabase
+- Используйте strong secrets для `JWT_SECRET`
 - Включите SSL/HTTPS (Coolify делает это автоматически)
 
 ## Поддержка
@@ -180,4 +169,3 @@ ALLOWED_ORIGINS=https://stage.walknplay.ru,https://walknplay.ru
 При проблемах с деплоем:
 1. Проверьте логи в Coolify
 2. Проверьте документацию Coolify: https://coolify.io/docs
-3. Проверьте status страницу Supabase: https://status.supabase.com

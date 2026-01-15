@@ -13,6 +13,7 @@ RUN npm ci
 
 # Copy source code
 COPY src ./src
+COPY migrations ./migrations
 
 # Build TypeScript
 RUN npm run build
@@ -31,6 +32,7 @@ RUN npm ci --only=production && npm cache clean --force
 
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/migrations ./migrations
 
 # Copy swagger specification directly from source
 COPY src/specification ./dist/specification

@@ -1,15 +1,16 @@
-version: '3.8'
-
 services:
   backend:
     build:
       context: .
       dockerfile: Dockerfile
-    # Coolify will manage ports automatically, but expose for local development
     ports:
       - "${PORT:-3001}:3001"
     environment:
       - NODE_ENV=${NODE_ENV:-production}
+      - DATABASE_URL=${DATABASE_URL}
+      - DB_SSL=${DB_SSL:-false}
+      - JWT_SECRET=${JWT_SECRET}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
     env_file:
       - .env
     restart: unless-stopped
@@ -22,3 +23,12 @@ services:
     # Labels for Coolify (optional, helps with organization)
     labels:
       - "coolify.managed=true"
+  pgweb:
+    image: sosedoff/pgweb
+    restart: unless-stopped
+    expose:
+      - "8081"
+    environment:
+      PGWEB_DATABASE_URL: "${DATABASE_URL}"
+      PGWEB_AUTH_USER: "${PGWEB_AUTH_USER}"
+      PGWEB_AUTH_PASS: "${PGWEB_AUTH_PASS}"

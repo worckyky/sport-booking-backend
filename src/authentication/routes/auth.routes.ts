@@ -1,21 +1,72 @@
 import { Router, Request, Response } from 'express';
 import { AuthAPI } from '../api/auth.api';
-import { AuthRequest, SignInRequest, UserProfile, ResetPasswordRequest, UpdatePasswordWithTokenRequest, EMAIL_STATUS } from '../model/auth.model';
-import { SupabaseClient } from '@supabase/supabase-js';
+import jwt from 'jsonwebtoken';
+import type { Pool } from 'pg';
+import { AUTH_COOKIE_NAME, AUTH_TOKEN_TTL_SECONDS, getJwtSecret } from '../../config/auth';
+import {
+  type AuthRequest,
+  type ResetPasswordRequest,
+  type SignInRequest,
+  type UpdatePasswordWithTokenRequest,
+  type UserProfile,
+  EMAIL_STATUS,
+  USER_ROLE
+} from '../model/auth.model';
 import { authMiddleware, AuthRequest as AuthReq } from '../middleware/auth.middleware';
+import type { DbUser } from '../model/user.model';
 
 export class AuthRoutes {
   private router: Router;
   private authAPI: AuthAPI;
-  private supabase: SupabaseClient;
-  private supabaseAdmin: SupabaseClient;
+  private db: Pool;
 
-  constructor(supabase: SupabaseClient, supabaseAdmin: SupabaseClient) {
+  constructor(db: Pool) {
     this.router = Router();
-    this.authAPI = new AuthAPI(supabase);
-    this.supabase = supabase;
-    this.supabaseAdmin = supabaseAdmin;
+    this.authAPI = new AuthAPI(db);
+    this.db = db;
     this.initializeRoutes();
+  }
+
+  private setAuthCookie(res: Response, accessToken: string): void {
+    res.cookie(AUTH_COOKIE_NAME, accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: AUTH_TOKEN_TTL_SECONDS * 1000
+    });
+  }
+
+  private async getUserProfileById(userId: string): Promise<UserProfile | null> {
+    const userRes = await this.db.query<DbUser>('select * from users where id = $1', [userId]);
+    const user = userRes.rows[0];
+    if (!user) return null;
+
+    const emailVerified = user.email_verified ?? EMAIL_STATUS.NOT_VERIFIED;
+
+    const profile: UserProfile = {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      name: user.name ?? undefined,
+      phone: user.phone ?? undefined,
+      date_of_birth: user.date_of_birth ?? undefined,
+      email_verified: emailVerified,
+      registration_date: user.created_at,
+      created_at: user.created_at,
+      updated_at: user.updated_at
+    };
+
+    if (user.role === USER_ROLE.CAMPAIGN) {
+      const campaignRes = await this.db.query<{ id: string }>(
+        'select id from campaign_info where user_id = $1 limit 1',
+        [userId]
+      );
+      if ((campaignRes.rowCount ?? 0) > 0) {
+        profile.campaign_id = campaignRes.rows[0].id;
+      }
+    }
+
+    return profile;
   }
 
   private initializeRoutes(): void {
@@ -23,33 +74,27 @@ export class AuthRoutes {
       try {
         const { access_token, refresh_token } = req.query;
 
-        if (!access_token || !refresh_token) {
+        // refresh_token оставлен для совместимости со старым контрактом, но для локального flow не нужен
+        if (!access_token) {
           return res.status(400).json({ error: 'Invalid confirmation link' });
         }
 
         const data = await this.authAPI.confirmEmail(
           access_token as string,
-          refresh_token as string
+          typeof refresh_token === 'string' ? refresh_token : ''
         );
 
-        // Устанавливаем cookie с токеном на 7 дней
-        res.cookie('auth_token', data.accessToken, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
-          maxAge: 7 * 24 * 60 * 60 * 1000
-        });
+        this.setAuthCookie(res, data.accessToken);
 
-        // Получаем информацию о пользователе
-        const { data: userData, error: userError } = await this.supabase.auth.getUser(data.accessToken);
-
-        if (userError || !userData.user) {
+        const payload = jwt.verify(data.accessToken, getJwtSecret());
+        const userId = typeof payload === 'string' ? null : payload.sub;
+        if (!userId || typeof userId !== 'string') {
           return res.status(400).json({ error: 'Failed to get user data' });
         }
 
         // Возвращаем ID и статус верификации email
         res.json({
-          id: userData.user.id,
+          id: userId,
           email_verified: 'VERIFIED'
         });
       } catch (error) {
@@ -71,13 +116,7 @@ export class AuthRoutes {
 
         const data = await this.authAPI.signIn({ email, password });
         
-        // Устанавливаем cookie с токеном на 7 дней
-        res.cookie('auth_token', data.accessToken, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
-          maxAge: 7 * 24 * 60 * 60 * 1000 // 7 дней в миллисекундах
-        });
+        this.setAuthCookie(res, data.accessToken);
 
         // Возвращаем ID и статус верификации email
         res.json({ 
@@ -95,21 +134,19 @@ export class AuthRoutes {
 
     this.router.post('/signup', async (req: Request<{}, any, AuthRequest>, res: Response) => {
       try {
-        const { email, password, role, name, phone } = req.body;
+        const { email, password, role, name, phone, date_of_birth } = req.body;
 
         if (!email || !password) {
           return res.status(400).json({ error: 'Email and password are required' });
         }
 
-        const data = await this.authAPI.signUp({ email, password, role, name, phone });
+        if (role !== undefined && !Object.values(USER_ROLE).includes(role)) {
+          return res.status(400).json({ error: 'Invalid role' });
+        }
+
+        const data = await this.authAPI.signUp({ email, password, role, name, phone, date_of_birth });
         
-        // Устанавливаем cookie с токеном на 7 дней
-        res.cookie('auth_token', data.accessToken, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
-          maxAge: 7 * 24 * 60 * 60 * 1000 // 7 дней в миллисекундах
-        });
+        this.setAuthCookie(res, data.accessToken);
 
         // Возвращаем ID и статус верификации email
         res.json({ 
@@ -130,7 +167,7 @@ export class AuthRoutes {
         const data = await this.authAPI.signOut();
         
         // Удаляем cookie
-        res.clearCookie('auth_token', {
+        res.clearCookie(AUTH_COOKIE_NAME, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
           sameSite: 'strict'
@@ -146,7 +183,7 @@ export class AuthRoutes {
       }
     });
 
-    this.router.get('/profile', authMiddleware(this.supabaseAdmin), async (req: AuthReq, res: Response) => {
+    this.router.get('/profile', authMiddleware(this.db), async (req: AuthReq, res: Response) => {
       try {
         const userId = req.userId;
 
@@ -154,39 +191,8 @@ export class AuthRoutes {
           return res.status(401).json({ error: 'User not authenticated' });
         }
 
-        // Используем admin клиент для получения профиля
-        const { data, error } = await this.supabaseAdmin.auth.admin.getUserById(userId);
-
-        if (error || !data.user) {
-          return res.status(404).json({ error: 'User profile not found' });
-        }
-
-        const emailVerified = data.user.email_confirmed_at ? EMAIL_STATUS.VERIFIED : EMAIL_STATUS.NOT_VERIFIED;
-
-        const profile: UserProfile = {
-          id: data.user.id,
-          email: data.user.email,
-          role: data.user.user_metadata?.role,
-          name: data.user.user_metadata?.name,
-          phone: data.user.user_metadata?.phone,
-          email_verified: emailVerified,
-          registration_date: data.user.created_at,
-          created_at: data.user.created_at,
-          updated_at: data.user.updated_at || data.user.created_at
-        };
-
-        // Если пользователь имеет роль CAMPAIGN, получаем ID кампании
-        if (data.user.user_metadata?.role === 'CAMPAIGN') {
-          const { data: campaignData, error: campaignError } = await this.supabaseAdmin
-            .from('campaign_info')
-            .select('id')
-            .eq('user_id', userId)
-            .single();
-
-          if (!campaignError && campaignData) {
-            profile.campaign_id = campaignData.id;
-          }
-        }
+        const profile = await this.getUserProfileById(userId);
+        if (!profile) return res.status(404).json({ error: 'User profile not found' });
 
         res.json(profile);
       } catch (error) {
@@ -198,7 +204,7 @@ export class AuthRoutes {
       }
     });
 
-    this.router.put('/profile', authMiddleware(this.supabaseAdmin), async (req: AuthReq, res: Response) => {
+    this.router.put('/profile', authMiddleware(this.db), async (req: AuthReq, res: Response) => {
       try {
         const userId = req.userId;
 
@@ -208,29 +214,37 @@ export class AuthRoutes {
 
         const updates = req.body;
         
-        // Используем admin клиент для обновления профиля
-        const { data, error } = await this.supabaseAdmin.auth.admin.updateUserById(userId, {
-          user_metadata: {
-            role: updates.role,
-            name: updates.name,
-            phone: updates.phone
-          }
-        });
+        const fields: Array<'role' | 'name' | 'phone' | 'date_of_birth'> = [
+          'role',
+          'name',
+          'phone',
+          'date_of_birth'
+        ];
 
-        if (error || !data.user) {
-          return res.status(400).json({ error: 'Failed to update profile' });
+        const setParts: string[] = [];
+        const values: Array<string | null> = [];
+        let idx = 1;
+
+        for (const f of fields) {
+          if (updates[f] !== undefined) {
+            setParts.push(`${f} = $${idx}`);
+            values.push(updates[f] ?? null);
+            idx += 1;
+          }
         }
 
-        const updatedProfile = {
-          id: data.user.id,
-          email: data.user.email,
-          role: data.user.user_metadata?.role,
-          name: data.user.user_metadata?.name,
-          phone: data.user.user_metadata?.phone,
-          registration_date: data.user.created_at,
-          created_at: data.user.created_at,
-          updated_at: data.user.updated_at || data.user.created_at
-        };
+        if (setParts.length === 0) {
+          return res.status(400).json({ error: 'No data provided for update' });
+        }
+
+        values.push(userId);
+        await this.db.query(
+          `update users set ${setParts.join(', ')}, updated_at = now() where id = $${idx}`,
+          values
+        );
+
+        const updatedProfile = await this.getUserProfileById(userId);
+        if (!updatedProfile) return res.status(404).json({ error: 'User profile not found' });
 
         res.json(updatedProfile);
       } catch (error) {
@@ -273,31 +287,30 @@ export class AuthRoutes {
           return res.status(400).json({ error: 'Access token is required' });
         }
 
-        // Устанавливаем сессию с токенами из ссылки восстановления пароля
-        const { data: sessionData, error: sessionError } = await this.supabase.auth.setSession({
-          access_token: access_token,
-          refresh_token: refresh_token || ''
-        });
+        // refresh_token оставлен для совместимости со старым контрактом, но не используется
+        void refresh_token;
 
-        if (sessionError || !sessionData.session || !sessionData.user) {
-          return res.status(400).json({ error: 'Invalid or expired token' });
+        const updated = await this.authAPI.updatePasswordWithResetToken(
+          access_token,
+          password,
+          confirmPassword
+        );
+
+        const newJwt = jwt.sign({}, getJwtSecret(), {
+          subject: updated.userId,
+          expiresIn: AUTH_TOKEN_TTL_SECONDS
+        });
+        this.setAuthCookie(res, newJwt);
+
+        const profile = await this.getUserProfileById(updated.userId);
+        if (!profile) {
+          return res.status(404).json({ error: 'User profile not found' });
         }
 
-        const data = await this.authAPI.updatePassword({ password, confirmPassword });
-
-        // Устанавливаем cookie с новым access_token для автоматической авторизации
-        res.cookie('auth_token', sessionData.session.access_token, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
-          maxAge: 7 * 24 * 60 * 60 * 1000
-        });
-
-        // Возвращаем информацию о пользователе
         res.json({
-          ...data,
-          id: sessionData.user.id,
-          email_verified: sessionData.user.email_confirmed_at ? 'VERIFIED' : 'NOT_VERIFIED'
+          message: updated.message,
+          id: profile.id,
+          email_verified: profile.email_verified
         });
       } catch (error) {
         if (error instanceof Error) {

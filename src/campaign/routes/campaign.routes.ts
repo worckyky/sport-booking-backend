@@ -1,17 +1,13 @@
 import { Router, Response } from 'express';
-import { createClient } from '@supabase/supabase-js';
+import type { Pool } from 'pg';
 import { CampaignAPI } from '../api/campaign.api';
 import { authMiddleware, AuthRequest } from '../../authentication/middleware/auth.middleware';
 import { campaignRoleMiddleware } from '../middleware/campaign.middleware';
 import { CreateCampaignRequest, UpdateCampaignRequest } from '../model/campaign.model';
 
-const router = Router();
-
-const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-const campaignAPI = new CampaignAPI(supabase);
+export default function createCampaignRoutes(db: Pool): Router {
+  const router = Router();
+  const campaignAPI = new CampaignAPI(db);
 
 // GET /campaign - Получить все кампании (публичный эндпоинт)
 router.get(
@@ -61,8 +57,8 @@ router.get(
 // POST /campaign - Создать новую кампанию
 router.post(
   '/',
-  authMiddleware(supabase),
-  campaignRoleMiddleware(supabase),
+  authMiddleware(db),
+  campaignRoleMiddleware(db),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       if (!req.userId) {
@@ -92,8 +88,8 @@ router.post(
 // PUT /campaign/:id - Обновить кампанию
 router.put(
   '/:id',
-  authMiddleware(supabase),
-  campaignRoleMiddleware(supabase),
+  authMiddleware(db),
+  campaignRoleMiddleware(db),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       if (!req.userId) {
@@ -134,8 +130,8 @@ router.put(
 // DELETE /campaign/:id - Удалить кампанию
 router.delete(
   '/:id',
-  authMiddleware(supabase),
-  campaignRoleMiddleware(supabase),
+  authMiddleware(db),
+  campaignRoleMiddleware(db),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       if (!req.userId) {
@@ -162,4 +158,5 @@ router.delete(
   }
 );
 
-export default router;
+  return router;
+}

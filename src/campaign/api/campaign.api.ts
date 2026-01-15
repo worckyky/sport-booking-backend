@@ -1,25 +1,22 @@
-import { SupabaseClient } from '@supabase/supabase-js';
+import crypto from 'crypto';
+import type { Pool } from 'pg';
 import {
   Campaign,
   CampaignResponse,
   CreateCampaignRequest,
   UpdateCampaignRequest
 } from '../model/campaign.model';
+import { normalizeEnumArray, normalizeJsonArray, toJsonbValue } from '../../utils/pg';
 
 export class CampaignAPI {
-  constructor(private supabase: SupabaseClient) {}
+  constructor(private db: Pool) {}
 
   async getCampaignById(campaignId: string): Promise<CampaignResponse> {
-    const { data, error } = await this.supabase
-      .from('campaign_info')
-      .select('*')
-      .eq('id', campaignId)
-      .single();
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
+    const { rows } = await this.db.query<Campaign>(
+      'select * from campaign_info where id = $1 limit 1',
+      [campaignId]
+    );
+    const data = rows[0];
     if (!data) {
       throw new Error('Campaign not found');
     }
@@ -28,15 +25,8 @@ export class CampaignAPI {
   }
 
   async getAllCampaigns(): Promise<CampaignResponse[]> {
-    const { data, error } = await this.supabase
-      .from('campaign_info')
-      .select('*');
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    return (data || []).map((campaign) => this.mapCampaignToResponse(campaign));
+    const { rows } = await this.db.query<Campaign>('select * from campaign_info');
+    return rows.map((campaign) => this.mapCampaignToResponse(campaign));
   }
 
   async createCampaign(
@@ -44,35 +34,55 @@ export class CampaignAPI {
     campaignData: CreateCampaignRequest
   ): Promise<CampaignResponse> {
     const requestData = campaignData as unknown as Record<string, unknown>;
-    
-    const { data, error } = await this.supabase
-      .from('campaign_info')
-      .insert({
-        user_id: userId,
-        name: campaignData.name,
-        description: campaignData.description,
-        short_description: campaignData.shortDescription || requestData.short_description || null,
-        location: campaignData.location,
-        contacts: campaignData.contacts,
-        working_timetable: campaignData.workingTimetable || requestData.working_timetable,
-        socials_links: campaignData.socialsLinks || requestData.socials_links || [],
-        payment_methods: campaignData.paymentMethods || requestData.payment_methods || [],
-        facilities: campaignData.facilities || [],
-        sports: campaignData.sports || [],
-        media: campaignData.media || {}
-      })
-      .select()
-      .single();
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
 
-    if (!data) {
-      throw new Error('Failed to create campaign');
-    }
+    const insert = await this.db.query<Campaign>(
+      `
+        insert into campaign_info (
+          id,
+          user_id,
+          name,
+          description,
+          short_description,
+          location,
+          contacts,
+          working_timetable,
+          socials_links,
+          payment_methods,
+          facilities,
+          sports,
+          media,
+          created_at,
+          updated_at
+        )
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        returning *
+      `,
+      [
+        id,
+        userId,
+        campaignData.name,
+        campaignData.description,
+        campaignData.shortDescription || requestData.short_description || null,
+        toJsonbValue(campaignData.location),
+        toJsonbValue(campaignData.contacts),
+        toJsonbValue(campaignData.workingTimetable || requestData.working_timetable || null),
+        toJsonbValue(campaignData.socialsLinks || requestData.socials_links || null),
+        campaignData.paymentMethods || requestData.payment_methods || null,
+        campaignData.facilities ?? null,
+        campaignData.sports ?? null,
+        toJsonbValue(campaignData.media ?? null),
+        now,
+        now
+      ]
+    );
 
-    return this.mapCampaignToResponse(data);
+    const created = insert.rows[0];
+    if (!created) throw new Error('Failed to create campaign');
+
+    return this.mapCampaignToResponse(created);
   }
 
   async updateCampaign(
@@ -80,73 +90,82 @@ export class CampaignAPI {
     userId: string,
     campaignData: UpdateCampaignRequest
   ): Promise<CampaignResponse> {
-    const updateData: Record<string, unknown> = {};
     const requestData = campaignData as unknown as Record<string, unknown>;
 
-    if (campaignData.name !== undefined) updateData.name = campaignData.name;
-    if (campaignData.description !== undefined) updateData.description = campaignData.description;
-    
+    const setParts: string[] = [];
+    const values: unknown[] = [];
+    let i = 1;
+
+    const add = (col: string, val: unknown): void => {
+      setParts.push(`${col} = $${i}`);
+      values.push(val);
+      i += 1;
+    };
+
+    if (campaignData.name !== undefined) add('name', campaignData.name);
+    if (campaignData.description !== undefined) add('description', campaignData.description);
+
     if (campaignData.shortDescription !== undefined) {
-      updateData.short_description = campaignData.shortDescription;
+      add('short_description', campaignData.shortDescription);
     } else if (requestData.short_description !== undefined) {
-      updateData.short_description = requestData.short_description;
+      add('short_description', requestData.short_description);
     }
-    
-    if (campaignData.location !== undefined) updateData.location = campaignData.location;
-    if (campaignData.contacts !== undefined) updateData.contacts = campaignData.contacts;
-    
+
+    if (campaignData.location !== undefined) add('location', toJsonbValue(campaignData.location));
+    if (campaignData.contacts !== undefined) add('contacts', toJsonbValue(campaignData.contacts));
+
     if (campaignData.workingTimetable !== undefined) {
-      updateData.working_timetable = campaignData.workingTimetable;
+      add('working_timetable', toJsonbValue(campaignData.workingTimetable));
     } else if (requestData.working_timetable !== undefined) {
-      updateData.working_timetable = requestData.working_timetable;
+      add('working_timetable', toJsonbValue(requestData.working_timetable));
     }
-    
+
     if (campaignData.socialsLinks !== undefined) {
-      updateData.socials_links = campaignData.socialsLinks;
+      add('socials_links', toJsonbValue(campaignData.socialsLinks));
     } else if (requestData.socials_links !== undefined) {
-      updateData.socials_links = requestData.socials_links;
+      add('socials_links', toJsonbValue(requestData.socials_links));
     }
-    
+
     if (campaignData.paymentMethods !== undefined) {
-      updateData.payment_methods = campaignData.paymentMethods;
+      add('payment_methods', campaignData.paymentMethods);
     } else if (requestData.payment_methods !== undefined) {
-      updateData.payment_methods = requestData.payment_methods;
-    }
-    
-    if (campaignData.facilities !== undefined) updateData.facilities = campaignData.facilities;
-    if (campaignData.sports !== undefined) updateData.sports = campaignData.sports;
-    if (campaignData.media !== undefined) updateData.media = campaignData.media;
-
-    updateData.updated_at = new Date().toISOString();
-
-    const { data, error } = await this.supabase
-      .from('campaign_info')
-      .update(updateData)
-      .eq('id', campaignId)
-      .eq('user_id', userId)
-      .select()
-      .single();
-
-    if (error) {
-      throw new Error(error.message);
+      add('payment_methods', requestData.payment_methods);
     }
 
-    if (!data) {
+    if (campaignData.facilities !== undefined) add('facilities', campaignData.facilities);
+    if (campaignData.sports !== undefined) add('sports', campaignData.sports);
+    if (campaignData.media !== undefined) add('media', toJsonbValue(campaignData.media));
+
+    add('updated_at', new Date().toISOString());
+
+    if (setParts.length === 0) {
       throw new Error('Campaign not found or not updated');
     }
 
-    return this.mapCampaignToResponse(data);
+    values.push(campaignId, userId);
+
+    const updated = await this.db.query<Campaign>(
+      `
+        update campaign_info
+        set ${setParts.join(', ')}
+        where id = $${i} and user_id = $${i + 1}
+        returning *
+      `,
+      values
+    );
+
+    if (updated.rowCount === 0) throw new Error('Campaign not found or not updated');
+    return this.mapCampaignToResponse(updated.rows[0]);
   }
 
   async deleteCampaign(campaignId: string, userId: string): Promise<void> {
-    const { error } = await this.supabase
-      .from('campaign_info')
-      .delete()
-      .eq('id', campaignId)
-      .eq('user_id', userId);
+    const result = await this.db.query('delete from campaign_info where id = $1 and user_id = $2', [
+      campaignId,
+      userId
+    ]);
 
-    if (error) {
-      throw new Error(error.message);
+    if (result.rowCount === 0) {
+      throw new Error('Campaign not found or not deleted');
     }
   }
 
@@ -160,10 +179,10 @@ export class CampaignAPI {
       location: campaign.location,
       contacts: campaign.contacts,
       workingTimetable: campaign.working_timetable,
-      socialsLinks: campaign.socials_links,
-      paymentMethods: campaign.payment_methods,
-      facilities: campaign.facilities,
-      sports: campaign.sports,
+      socialsLinks: normalizeJsonArray(campaign.socials_links),
+      paymentMethods: normalizeEnumArray(campaign.payment_methods),
+      facilities: normalizeEnumArray(campaign.facilities),
+      sports: normalizeEnumArray(campaign.sports),
       media: campaign.media,
       createdAt: campaign.created_at,
       updatedAt: campaign.updated_at

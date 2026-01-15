@@ -46,8 +46,8 @@ export interface UserProfile {
 }
 
 export interface AuthResponse {
-  user: any | null;
-  session: any | null;
+  user: unknown | null;
+  session: unknown | null;
 }
 
 export interface SignOutResponse {

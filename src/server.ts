@@ -1,11 +1,14 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.config';
 import { AuthRoutes } from './authentication/routes/auth.routes';
-import campaignRoutes from './campaign/routes/campaign.routes';
+import createCampaignRoutes from './campaign/routes/campaign.routes';
+import { getJwtSecret } from './config/auth';
+import { getDbPool } from './config/db';
+import { runMigrations } from './scripts/migrations';
+import { assertSafeIdentifier, parseSelect, quoteIdentifier } from './utils/sql';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -35,7 +38,7 @@ app.use(cookieParser());
 interface DatabaseQueryRequest {
   table: string;
   select?: string;
-  filters?: Record<string, any>;
+  filters?: Record<string, unknown>;
 }
 
 interface HealthResponse {
@@ -43,116 +46,90 @@ interface HealthResponse {
   timestamp: string;
 }
 
-// Supabase client
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || supabaseAnonKey;
+async function start(): Promise<void> {
+  // Database + Auth config (fail fast)
+  getJwtSecret();
+  const db = getDbPool();
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.error('Missing Supabase environment variables');
-  process.exit(1);
+  // Apply DB migrations on startup
+  await runMigrations(db);
+
+  // Initialize routes
+  const authRoutes = new AuthRoutes(db);
+  const campaignRoutes = createCampaignRoutes(db);
+
+  // Swagger UI
+  app.use('/api-docs', swaggerUi.serve);
+  app.get('/api-docs', swaggerUi.setup(swaggerSpec, {
+    customCss: '.swagger-ui .topbar { display: none }',
+    customSiteTitle: 'Sport Booking API Docs'
+  }));
+
+  // Use routes
+  app.use('/auth', authRoutes.getRouter());
+  app.use('/campaign', campaignRoutes);
+
+  // Health check endpoint
+  app.get('/health', (req: Request, res: Response<HealthResponse>) => {
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  // Database query endpoint
+  app.post('/db/query', async (req: Request<{}, any, DatabaseQueryRequest>, res: Response) => {
+    try {
+      const { table, select = '*', filters = {} } = req.body;
+
+      if (!table) {
+        return res.status(400).json({ error: 'Table name is required' });
+      }
+
+      assertSafeIdentifier(table, 'table');
+      const columns = parseSelect(select);
+      const safeCols =
+        columns.length === 1 && columns[0] === '*'
+          ? '*'
+          : columns
+              .map((c) => {
+                assertSafeIdentifier(c, 'select column');
+                return quoteIdentifier(c);
+              })
+              .join(', ');
+
+      const whereParts: string[] = [];
+      const values: unknown[] = [];
+      let i = 1;
+      for (const [key, value] of Object.entries(filters)) {
+        assertSafeIdentifier(key, 'filter column');
+        whereParts.push(`${quoteIdentifier(key)} = $${i}`);
+        values.push(value);
+        i += 1;
+      }
+
+      const sql =
+        whereParts.length === 0
+          ? `select ${safeCols} from ${quoteIdentifier(table)}`
+          : `select ${safeCols} from ${quoteIdentifier(table)} where ${whereParts.join(' and ')}`;
+
+      const result = await db.query(sql, values);
+      res.json(result.rows);
+    } catch (error) {
+      if (error instanceof Error) {
+        res.status(400).json({ error: error.message });
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  });
+
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
 }
 
-// Клиент с anon key для обычных операций
-const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-    detectSessionInUrl: false
-  }
-});
-
-// Клиент с service role key для проверки токенов и admin операций
-const supabaseAdmin: SupabaseClient = createClient(supabaseUrl, supabaseServiceKey!, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-    detectSessionInUrl: false
-  }
-});
-
-// Initialize routes
-const authRoutes = new AuthRoutes(supabase, supabaseAdmin);
-
-// Swagger UI
-app.use('/api-docs', swaggerUi.serve);
-app.get('/api-docs', swaggerUi.setup(swaggerSpec, {
-  customCss: '.swagger-ui .topbar { display: none }',
-  customSiteTitle: 'Sport Booking API Docs'
-}));
-
-// Use routes
-app.use('/auth', authRoutes.getRouter());
-app.use('/campaign', campaignRoutes);
-
-// Health check endpoint
-app.get('/health', (req: Request, res: Response<HealthResponse>) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Database query endpoint
-app.post('/db/query', async (req: Request<{}, any, DatabaseQueryRequest>, res: Response) => {
-  try {
-    const { table, select = '*', filters = {} } = req.body;
-
-    if (!table) {
-      return res.status(400).json({ error: 'Table name is required' });
-    }
-
-    let query = supabase.from(table).select(select);
-
-    // Apply filters
-    Object.entries(filters).forEach(([key, value]) => {
-      query = query.eq(key, value);
-    });
-
-    const { data, error } = await query;
-
-    if (error) {
-      return res.status(400).json({ error: error.message });
-    }
-
-    res.json(data);
-  } catch (error) {
-    if (error instanceof Error) {
-      res.status(400).json({ error: error.message });
-    } else {
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-});
-
-// Generic proxy for any Supabase request
-app.all('/supabase/*', async (req: Request, res: Response) => {
-  try {
-    const supabasePath = req.path.replace('/supabase', '');
-    const method = req.method.toLowerCase();
-
-    const response = await fetch(`${supabaseUrl}/rest/v1${supabasePath}`, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${supabaseAnonKey}`,
-        'apikey': supabaseAnonKey,
-        ...req.headers
-      },
-      body: ['GET', 'HEAD'].includes(method) ? undefined : JSON.stringify(req.body)
-    });
-
-    const data = await response.json();
-    res.status(response.status).json(data);
-  } catch (error) {
-    if (error instanceof Error) {
-      res.status(400).json({ error: error.message });
-    } else {
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+start().catch((error: unknown) => {
+  console.error(error);
+  process.exit(1);
 });
