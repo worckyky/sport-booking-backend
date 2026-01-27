@@ -5,6 +5,7 @@ import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.config';
 import { AuthRoutes } from './authentication/routes/auth.routes';
 import createCampaignRoutes from './campaign/routes/campaign.routes';
+import createBookingRoutes from './booking/routes/booking.routes';
 import { getJwtSecret } from './config/auth';
 import { getDbPool } from './config/db';
 import { runMigrations } from './scripts/migrations';
@@ -57,6 +58,7 @@ async function start(): Promise<void> {
   // Initialize routes
   const authRoutes = new AuthRoutes(db);
   const campaignRoutes = createCampaignRoutes(db);
+  const bookingRoutes = createBookingRoutes(db);
 
   // Swagger UI
   app.use('/api-docs', swaggerUi.serve);
@@ -68,6 +70,7 @@ async function start(): Promise<void> {
   // Use routes
   app.use('/auth', authRoutes.getRouter());
   app.use('/campaign', campaignRoutes);
+  app.use('/booking', bookingRoutes);
 
   // Health check endpoint
   app.get('/health', (req: Request, res: Response<HealthResponse>) => {
