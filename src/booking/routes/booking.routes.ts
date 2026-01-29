@@ -60,12 +60,37 @@ export default function createBookingRoutes(db: Pool): Router {
     campaignOwnerMiddleware(db),
     async (req: AuthRequest, res: Response) => {
       try {
-        const { campaign_id, name, price_per_hour } = req.body;
+        const {
+          campaign_id, name, sport_types, is_indoor, photos, price_per_hour,
+          slot_duration, working_hours_from, working_hours_to, working_days, client_info
+        } = req.body;
+
+        // Валидация обязательных полей
         if (!campaign_id || !name) {
           res.status(400).json({ error: 'campaign_id and name are required' });
           return;
         }
-        const field = await api.createField({ campaign_id, name, price_per_hour });
+        if (!sport_types || !Array.isArray(sport_types) || sport_types.length === 0) {
+          res.status(400).json({ error: 'sport_types array is required' });
+          return;
+        }
+        if (typeof is_indoor !== 'boolean') {
+          res.status(400).json({ error: 'is_indoor boolean is required' });
+          return;
+        }
+        if (!photos || !Array.isArray(photos) || photos.length === 0) {
+          res.status(400).json({ error: 'At least one photo is required' });
+          return;
+        }
+        if (typeof price_per_hour !== 'number' || price_per_hour <= 0) {
+          res.status(400).json({ error: 'price_per_hour must be a positive number' });
+          return;
+        }
+
+        const field = await api.createField({
+          campaign_id, name, sport_types, is_indoor, photos, price_per_hour,
+          slot_duration, working_hours_from, working_hours_to, working_days, client_info
+        });
         res.status(201).json(field);
       } catch (error) {
         res.status(400).json({ error: (error as Error).message });
@@ -80,8 +105,24 @@ export default function createBookingRoutes(db: Pool): Router {
     fieldOwnerMiddleware(db),
     async (req: AuthRequest, res: Response) => {
       try {
-        const { name, price_per_hour } = req.body;
-        const field = await api.updateField(req.params.id, { name, price_per_hour });
+        const {
+          name, sport_types, is_indoor, photos, price_per_hour, status,
+          slot_duration, working_hours_from, working_hours_to, working_days, client_info
+        } = req.body;
+
+        // Валидация status если передан
+        if (status !== undefined) {
+          const validStatuses = ['active', 'disabled'];
+          if (!validStatuses.includes(status)) {
+            res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+            return;
+          }
+        }
+
+        const field = await api.updateField(req.params.id, {
+          name, sport_types, is_indoor, photos, price_per_hour, status,
+          slot_duration, working_hours_from, working_hours_to, working_days, client_info
+        });
         if (!field) {
           res.status(404).json({ error: 'Field not found' });
           return;
@@ -107,7 +148,11 @@ export default function createBookingRoutes(db: Pool): Router {
         }
         res.status(204).send();
       } catch (error) {
-        res.status(500).json({ error: 'Internal server error' });
+        if ((error as Error).message.includes('active bookings')) {
+          res.status(409).json({ error: 'Cannot delete field with active bookings' });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
       }
     }
   );
@@ -176,6 +221,49 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   );
 
+  // POST /booking/slots/:id/block — заблокировать слот (только владелец)
+  router.post(
+    '/slots/:id/block',
+    authMiddleware(db),
+    slotOwnerMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const { reason } = req.body;
+        const slot = await api.blockSlot(req.params.id, reason);
+        if (!slot) {
+          res.status(404).json({ error: 'Slot not found' });
+          return;
+        }
+        res.json(slot);
+      } catch (error) {
+        if ((error as Error).message.includes('pending booking')) {
+          res.status(409).json({ error: 'Cannot block slot with pending booking' });
+        } else {
+          res.status(400).json({ error: (error as Error).message });
+        }
+      }
+    }
+  );
+
+  // POST /booking/slots/:id/unblock — разблокировать слот (только владелец)
+  router.post(
+    '/slots/:id/unblock',
+    authMiddleware(db),
+    slotOwnerMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const slot = await api.unblockSlot(req.params.id);
+        if (!slot) {
+          res.status(404).json({ error: 'Slot not found' });
+          return;
+        }
+        res.json(slot);
+      } catch (error) {
+        res.status(400).json({ error: (error as Error).message });
+      }
+    }
+  );
+
   // ==================== BOOKINGS ====================
 
   // GET /booking/my — мои бронирования (авторизованный пользователь)
@@ -211,7 +299,7 @@ export default function createBookingRoutes(db: Pool): Router {
   // POST /booking — создать бронь (авторизованный пользователь)
   router.post('/', authMiddleware(db), async (req: AuthRequest, res: Response) => {
     try {
-      const { slot_id } = req.body;
+      const { slot_id, comment } = req.body;
       if (!slot_id) {
         res.status(400).json({ error: 'slot_id is required' });
         return;
@@ -220,7 +308,7 @@ export default function createBookingRoutes(db: Pool): Router {
         res.status(400).json({ error: 'Invalid slot_id format' });
         return;
       }
-      const booking = await api.createBooking(slot_id, req.userId!);
+      const booking = await api.createBooking(slot_id, req.userId!, comment);
       res.status(201).json(booking);
     } catch (error) {
       if ((error as Error).message === 'Slot already booked') {
@@ -230,6 +318,24 @@ export default function createBookingRoutes(db: Pool): Router {
       } else {
         res.status(400).json({ error: (error as Error).message });
       }
+    }
+  });
+
+  // GET /booking/:id — получить детали брони (владелец брони)
+  router.get('/:id', authMiddleware(db), async (req: AuthRequest, res: Response) => {
+    try {
+      if (!isValidUUID(req.params.id)) {
+        res.status(400).json({ error: 'Invalid booking ID format' });
+        return;
+      }
+      const booking = await api.getBookingDetailsById(req.params.id, req.userId!);
+      if (!booking) {
+        res.status(404).json({ error: 'Booking not found' });
+        return;
+      }
+      res.json(booking);
+    } catch (error) {
+      res.status(500).json({ error: 'Internal server error' });
     }
   });
 
@@ -245,7 +351,7 @@ export default function createBookingRoutes(db: Pool): Router {
           res.status(400).json({ error: 'status is required' });
           return;
         }
-        const validStatuses = ['pending', 'confirmed', 'rejected', 'cancelled', 'completed'];
+        const validStatuses = ['pending', 'confirmed', 'rejected', 'cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'completed'];
         if (!validStatuses.includes(status)) {
           res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
           return;
