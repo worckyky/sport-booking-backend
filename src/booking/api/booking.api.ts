@@ -11,8 +11,65 @@ import {
   BookingDetails
 } from '../model/booking.model';
 
+interface WorkingTimetable {
+  monday?: { from: string; to: string };
+  tuesday?: { from: string; to: string };
+  wednesday?: { from: string; to: string };
+  thursday?: { from: string; to: string };
+  friday?: { from: string; to: string };
+  saturday?: { from: string; to: string };
+  sunday?: { from: string; to: string };
+}
+
 export class BookingAPI {
   constructor(private db: Pool) {}
+
+  // ==================== HELPERS ====================
+
+  private async getCampaignWorkingTimetable(campaignId: string): Promise<WorkingTimetable | null> {
+    const result = await this.db.query<{ working_timetable: WorkingTimetable | null }>(
+      'SELECT working_timetable FROM campaign_info WHERE id = $1',
+      [campaignId]
+    );
+    if (!result.rows[0]) return null;
+    const timetable = result.rows[0].working_timetable;
+    // Проверяем, что это не пустой объект
+    if (!timetable || Object.keys(timetable).length === 0) return null;
+    return timetable;
+  }
+
+  private validateFieldWorkingHours(
+    fieldFrom: string | null | undefined,
+    fieldTo: string | null | undefined,
+    campaignTimetable: WorkingTimetable
+  ): void {
+    if (!fieldFrom || !fieldTo) return; // Если время поля не задано, пропускаем
+
+    // Получаем минимальное/максимальное время работы кампании
+    const campaignHours: { from: string; to: string }[] = [];
+    const days: (keyof WorkingTimetable)[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
+    for (const day of days) {
+      const schedule = campaignTimetable[day];
+      if (schedule?.from && schedule?.to) {
+        campaignHours.push({ from: schedule.from, to: schedule.to });
+      }
+    }
+
+    if (campaignHours.length === 0) return; // Нет расписания кампании
+
+    // Находим самое раннее открытие и самое позднее закрытие
+    const earliestOpen = campaignHours.reduce((min, h) => h.from < min ? h.from : min, '23:59');
+    const latestClose = campaignHours.reduce((max, h) => h.to > max ? h.to : max, '00:00');
+
+    // Проверяем, что время поля не выходит за рамки
+    if (fieldFrom < earliestOpen) {
+      throw new Error(`Время начала работы поля (${fieldFrom}) не может быть раньше открытия площадки (${earliestOpen})`);
+    }
+    if (fieldTo > latestClose) {
+      throw new Error(`Время окончания работы поля (${fieldTo}) не может быть позже закрытия площадки (${latestClose})`);
+    }
+  }
 
   // ==================== FIELDS ====================
 
@@ -33,6 +90,12 @@ export class BookingAPI {
   }
 
   async createField(data: CreateFieldRequest): Promise<Field> {
+    // Валидация: время работы поля не может выходить за время работы площадки
+    const campaignTimetable = await this.getCampaignWorkingTimetable(data.campaign_id);
+    if (campaignTimetable) {
+      this.validateFieldWorkingHours(data.working_hours_from, data.working_hours_to, campaignTimetable);
+    }
+
     const result = await this.db.query<Field>(
       `INSERT INTO fields (
         campaign_id, name, sport_types, is_indoor, photos, price_per_hour,
@@ -58,6 +121,19 @@ export class BookingAPI {
   }
 
   async updateField(fieldId: string, data: UpdateFieldRequest): Promise<Field | null> {
+    // Валидация: время работы поля не может выходить за время работы площадки
+    if (data.working_hours_from !== undefined || data.working_hours_to !== undefined) {
+      const currentField = await this.getFieldById(fieldId);
+      if (currentField) {
+        const campaignTimetable = await this.getCampaignWorkingTimetable(currentField.campaign_id);
+        if (campaignTimetable) {
+          const newFrom = data.working_hours_from !== undefined ? data.working_hours_from : currentField.working_hours_from;
+          const newTo = data.working_hours_to !== undefined ? data.working_hours_to : currentField.working_hours_to;
+          this.validateFieldWorkingHours(newFrom, newTo, campaignTimetable);
+        }
+      }
+    }
+
     const sets: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
