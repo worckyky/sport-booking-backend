@@ -14,19 +14,36 @@ export enum Facility {
   PARKING = 'PARKING',
   SHOWER = 'SHOWER',
   LOCKER_ROOM = 'LOCKER_ROOM',
+  STORAGE = 'STORAGE',
   WIFI = 'WIFI',
   LIGHTING = 'LIGHTING',
+  STANDS = 'STANDS',
+  MUSIC = 'MUSIC',
   AIR_CONDITIONING = 'AIR_CONDITIONING',
+  HEATING = 'HEATING',
   CAFE = 'CAFE',
   RENTAL = 'RENTAL',
+  TRAINERS = 'TRAINERS',
+  RESTROOM = 'RESTROOM',
   VIDEO_SURVEILLANCE = 'VIDEO_SURVEILLANCE'
 }
 
 export enum Sport {
   FOOTBALL = 'FOOTBALL',
+  MINI_FOOTBALL = 'MINI_FOOTBALL',
   BASKETBALL = 'BASKETBALL',
+  VOLLEYBALL = 'VOLLEYBALL',
   TENNIS = 'TENNIS',
-  VOLLEYBALL = 'VOLLEYBALL'
+  TABLE_TENNIS = 'TABLE_TENNIS',
+  BADMINTON = 'BADMINTON',
+  SQUASH = 'SQUASH',
+  PADEL = 'PADEL',
+  HOCKEY = 'HOCKEY',
+  FITNESS = 'FITNESS',
+  YOGA = 'YOGA',
+  SWIMMING = 'SWIMMING',
+  MARTIAL_ARTS = 'MARTIAL_ARTS',
+  OTHER = 'OTHER'
 }
 
 export interface Location {
@@ -88,6 +105,7 @@ export interface Campaign {
   facilities: Facility[] | null;
   sports: Sport[] | null;
   media: Media | null;
+  booking_info: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -106,6 +124,7 @@ export interface CampaignResponse {
   facilities: Facility[] | null;
   sports: Sport[] | null;
   media: Media | null;
+  bookingInfo: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -122,6 +141,7 @@ export interface CreateCampaignRequest {
   facilities?: Facility[];
   sports?: Sport[];
   media?: Media;
+  bookingInfo?: string;
 }
 
 export interface UpdateCampaignRequest {
@@ -136,4 +156,5 @@ export interface UpdateCampaignRequest {
   facilities?: Facility[];
   sports?: Sport[];
   media?: Media;
+  bookingInfo?: string;
 }

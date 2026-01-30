@@ -62,7 +62,7 @@ export default function createBookingRoutes(db: Pool): Router {
       try {
         const {
           campaign_id, name, sport_types, is_indoor, photos, price_per_hour,
-          slot_duration, working_hours_from, working_hours_to, working_days, client_info
+          slot_duration, working_hours_from, working_hours_to, working_days, working_timetable, client_info
         } = req.body;
 
         // Валидация обязательных полей
@@ -89,7 +89,7 @@ export default function createBookingRoutes(db: Pool): Router {
 
         const field = await api.createField({
           campaign_id, name, sport_types, is_indoor, photos, price_per_hour,
-          slot_duration, working_hours_from, working_hours_to, working_days, client_info
+          slot_duration, working_hours_from, working_hours_to, working_days, working_timetable, client_info
         });
         res.status(201).json(field);
       } catch (error) {
@@ -107,7 +107,7 @@ export default function createBookingRoutes(db: Pool): Router {
       try {
         const {
           name, sport_types, is_indoor, photos, price_per_hour, status,
-          slot_duration, working_hours_from, working_hours_to, working_days, client_info
+          slot_duration, working_hours_from, working_hours_to, working_days, working_timetable, client_info
         } = req.body;
 
         // Валидация status если передан
@@ -121,7 +121,7 @@ export default function createBookingRoutes(db: Pool): Router {
 
         const field = await api.updateField(req.params.id, {
           name, sport_types, is_indoor, photos, price_per_hour, status,
-          slot_duration, working_hours_from, working_hours_to, working_days, client_info
+          slot_duration, working_hours_from, working_hours_to, working_days, working_timetable, client_info
         });
         if (!field) {
           res.status(404).json({ error: 'Field not found' });
@@ -351,7 +351,7 @@ export default function createBookingRoutes(db: Pool): Router {
           res.status(400).json({ error: 'status is required' });
           return;
         }
-        const validStatuses = ['pending', 'confirmed', 'rejected', 'cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'completed'];
+        const validStatuses = ['pending', 'confirmed', 'completed', 'no_show', 'rejected', 'cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin'];
         if (!validStatuses.includes(status)) {
           res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
           return;

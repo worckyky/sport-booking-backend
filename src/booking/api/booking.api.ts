@@ -8,8 +8,12 @@ import {
   Booking,
   BookingStatus,
   SlotWithBooking,
-  BookingDetails
+  BookingDetails,
+  FieldDaySchedule,
+  FieldWorkingTimetable,
+  DayOfWeek
 } from '../model/booking.model';
+import { toJsonbValue } from '../../utils/pg';
 
 interface WorkingTimetable {
   monday?: { from: string; to: string };
@@ -71,6 +75,99 @@ export class BookingAPI {
     }
   }
 
+  private validateFieldTimetableAgainstCampaign(
+    fieldTimetable: FieldWorkingTimetable,
+    campaignTimetable: WorkingTimetable
+  ): void {
+    const days: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
+    for (const day of days) {
+      const fieldDay = fieldTimetable[day];
+      const campaignDay = campaignTimetable[day];
+
+      if (!fieldDay) continue; // выходной у поля - OK
+      if (!campaignDay) {
+        throw new Error(`Поле не может работать в ${day}, когда площадка закрыта`);
+      }
+
+      if (fieldDay.from < campaignDay.from) {
+        throw new Error(`Время начала работы поля (${fieldDay.from}) в ${day} не может быть раньше открытия площадки (${campaignDay.from})`);
+      }
+      if (fieldDay.to > campaignDay.to) {
+        throw new Error(`Время окончания работы поля (${fieldDay.to}) в ${day} не может быть позже закрытия площадки (${campaignDay.to})`);
+      }
+
+      // Валидация перерывов
+      if (fieldDay.breaks) {
+        this.validateBreaks(fieldDay);
+      }
+    }
+  }
+
+  private validateBreaks(schedule: FieldDaySchedule): void {
+    const breaks = schedule.breaks || [];
+    const workStart = this.timeToMinutes(schedule.from);
+    const workEnd = this.timeToMinutes(schedule.to);
+
+    for (const brk of breaks) {
+      const brkStart = this.timeToMinutes(brk.from);
+      const brkEnd = this.timeToMinutes(brk.to);
+
+      if (brkStart >= brkEnd) {
+        throw new Error(`Время начала перерыва (${brk.from}) должно быть раньше времени окончания (${brk.to})`);
+      }
+      if (brkStart < workStart || brkEnd > workEnd) {
+        throw new Error(`Перерыв (${brk.from}-${brk.to}) должен быть в пределах рабочего времени (${schedule.from}-${schedule.to})`);
+      }
+    }
+
+    // Проверка на пересечение перерывов между собой
+    for (let i = 0; i < breaks.length; i++) {
+      for (let j = i + 1; j < breaks.length; j++) {
+        const a = { start: this.timeToMinutes(breaks[i].from), end: this.timeToMinutes(breaks[i].to) };
+        const b = { start: this.timeToMinutes(breaks[j].from), end: this.timeToMinutes(breaks[j].to) };
+        if (a.start < b.end && a.end > b.start) {
+          throw new Error(`Перерывы не должны пересекаться: ${breaks[i].from}-${breaks[i].to} и ${breaks[j].from}-${breaks[j].to}`);
+        }
+      }
+    }
+  }
+
+  private getDaySchedule(
+    field: Field,
+    date: Date,
+    campaignTimetable?: WorkingTimetable | null
+  ): FieldDaySchedule | null {
+    const dayNames: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const dayOfWeek = dayNames[date.getDay()];
+
+    // 1. Приоритет: working_timetable поля
+    if (field.working_timetable && dayOfWeek in field.working_timetable) {
+      const schedule = field.working_timetable[dayOfWeek];
+      return schedule ?? null; // null = выходной
+    }
+
+    // 2. Fallback: старые поля working_hours_from/to
+    if (field.working_hours_from && field.working_hours_to) {
+      const shortDayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+      const shortDay = shortDayNames[date.getDay()];
+      if (field.working_days?.includes(shortDay)) {
+        return { from: field.working_hours_from, to: field.working_hours_to };
+      }
+      return null; // выходной
+    }
+
+    // 3. Fallback: расписание кампании
+    if (campaignTimetable && dayOfWeek in campaignTimetable) {
+      const campaignDay = campaignTimetable[dayOfWeek];
+      if (campaignDay) {
+        return { from: campaignDay.from, to: campaignDay.to };
+      }
+    }
+
+    return null; // нет расписания
+  }
+
   // ==================== FIELDS ====================
 
   async getFieldsByCampaign(campaignId: string): Promise<Field[]> {
@@ -93,15 +190,20 @@ export class BookingAPI {
     // Валидация: время работы поля не может выходить за время работы площадки
     const campaignTimetable = await this.getCampaignWorkingTimetable(data.campaign_id);
     if (campaignTimetable) {
+      // Валидация нового формата working_timetable
+      if (data.working_timetable) {
+        this.validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable);
+      }
+      // Валидация legacy формата
       this.validateFieldWorkingHours(data.working_hours_from, data.working_hours_to, campaignTimetable);
     }
 
     const result = await this.db.query<Field>(
       `INSERT INTO fields (
         campaign_id, name, sport_types, is_indoor, photos, price_per_hour,
-        slot_duration, working_hours_from, working_hours_to, working_days, client_info
+        slot_duration, working_hours_from, working_hours_to, working_days, working_timetable, client_info
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING *`,
       [
         data.campaign_id,
@@ -114,6 +216,7 @@ export class BookingAPI {
         data.working_hours_from ?? null,
         data.working_hours_to ?? null,
         data.working_days ?? ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+        toJsonbValue(data.working_timetable ?? null),
         data.client_info ?? null
       ]
     );
@@ -122,11 +225,20 @@ export class BookingAPI {
 
   async updateField(fieldId: string, data: UpdateFieldRequest): Promise<Field | null> {
     // Валидация: время работы поля не может выходить за время работы площадки
-    if (data.working_hours_from !== undefined || data.working_hours_to !== undefined) {
+    const needsValidation = data.working_hours_from !== undefined ||
+                            data.working_hours_to !== undefined ||
+                            data.working_timetable !== undefined;
+
+    if (needsValidation) {
       const currentField = await this.getFieldById(fieldId);
       if (currentField) {
         const campaignTimetable = await this.getCampaignWorkingTimetable(currentField.campaign_id);
         if (campaignTimetable) {
+          // Валидация нового формата working_timetable
+          if (data.working_timetable !== undefined && data.working_timetable !== null) {
+            this.validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable);
+          }
+          // Валидация legacy формата
           const newFrom = data.working_hours_from !== undefined ? data.working_hours_from : currentField.working_hours_from;
           const newTo = data.working_hours_to !== undefined ? data.working_hours_to : currentField.working_hours_to;
           this.validateFieldWorkingHours(newFrom, newTo, campaignTimetable);
@@ -177,6 +289,10 @@ export class BookingAPI {
     if (data.working_days !== undefined) {
       sets.push(`working_days = $${idx++}`);
       values.push(data.working_days);
+    }
+    if (data.working_timetable !== undefined) {
+      sets.push(`working_timetable = $${idx++}`);
+      values.push(toJsonbValue(data.working_timetable));
     }
     if (data.client_info !== undefined) {
       sets.push(`client_info = $${idx++}`);
@@ -233,19 +349,23 @@ export class BookingAPI {
       return [];
     }
 
-    // Проверяем рабочий день
-    const dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-    const dayOfWeek = dayNames[requestedDate.getDay()];
+    // Получаем расписание кампании для fallback
+    const campaignTimetable = await this.getCampaignWorkingTimetable(field.campaign_id);
 
-    if (!field.working_days?.includes(dayOfWeek)) {
-      return [];
+    // Получаем расписание на конкретный день (с учетом fallback логики)
+    const daySchedule = this.getDaySchedule(field, requestedDate, campaignTimetable);
+
+    if (!daySchedule) {
+      return []; // выходной день
     }
 
     // Проверяем существующие слоты
     const existingSlots = await this.db.query(
-      `SELECT s.*, b.id as booking_id, b.user_id as booking_user_id, b.status as booking_status
+      `SELECT s.*, b.id as booking_id, b.user_id as booking_user_id, b.status as booking_status,
+              u.name as user_name, u.phone as user_phone
        FROM booking_slots s
        LEFT JOIN bookings b ON s.id = b.slot_id
+       LEFT JOIN users u ON b.user_id = u.id
        WHERE s.field_id = $1 AND s.date = $2
        ORDER BY s.start_time`,
       [fieldId, date]
@@ -255,12 +375,8 @@ export class BookingAPI {
       return this.mapSlotsWithBookings(existingSlots.rows);
     }
 
-    // Lazy генерация слотов
-    if (!field.working_hours_from || !field.working_hours_to) {
-      return [];
-    }
-
-    const slots = this.generateSlots(field);
+    // Lazy генерация слотов с учетом расписания дня и перерывов
+    const slots = this.generateSlotsFromSchedule(daySchedule, field.slot_duration || 60);
 
     if (slots.length === 0) {
       return [];
@@ -297,28 +413,60 @@ export class BookingAPI {
     return this.mapSlotsWithBookings(newSlots.rows);
   }
 
-  private generateSlots(field: Field): Array<{ start_time: string; end_time: string }> {
+  private generateSlotsFromSchedule(
+    schedule: FieldDaySchedule,
+    slotDuration: number
+  ): Array<{ start_time: string; end_time: string }> {
     const slots: Array<{ start_time: string; end_time: string }> = [];
 
-    if (!field.working_hours_from || !field.working_hours_to) {
-      return slots;
-    }
-
-    const startMinutes = this.timeToMinutes(field.working_hours_from);
-    const endMinutes = this.timeToMinutes(field.working_hours_to);
-    const duration = field.slot_duration || 60;
+    const startMinutes = this.timeToMinutes(schedule.from);
+    const endMinutes = this.timeToMinutes(schedule.to);
+    const sortedBreaks = (schedule.breaks || [])
+      .map(b => ({ start: this.timeToMinutes(b.from), end: this.timeToMinutes(b.to) }))
+      .sort((a, b) => a.start - b.start);
 
     let current = startMinutes;
 
-    while (current + duration <= endMinutes) {
+    while (current + slotDuration <= endMinutes) {
+      // Проверяем, находимся ли мы внутри перерыва
+      const activeBreak = sortedBreaks.find(b => current >= b.start && current < b.end);
+      if (activeBreak) {
+        // Перепрыгиваем на конец перерыва
+        current = activeBreak.end;
+        continue;
+      }
+
+      const slotEnd = current + slotDuration;
+
+      // Проверяем, пересекается ли слот с перерывом
+      const overlappingBreak = sortedBreaks.find(b => current < b.end && slotEnd > b.start);
+      if (overlappingBreak) {
+        // Слот заходит в перерыв - перепрыгиваем на конец перерыва
+        current = overlappingBreak.end;
+        continue;
+      }
+
       slots.push({
         start_time: this.minutesToTime(current),
-        end_time: this.minutesToTime(current + duration)
+        end_time: this.minutesToTime(slotEnd)
       });
-      current += duration;
+
+      current += slotDuration;
     }
 
     return slots;
+  }
+
+  // DEPRECATED: legacy метод для обратной совместимости
+  private generateSlots(field: Field): Array<{ start_time: string; end_time: string }> {
+    if (!field.working_hours_from || !field.working_hours_to) {
+      return [];
+    }
+
+    return this.generateSlotsFromSchedule(
+      { from: field.working_hours_from, to: field.working_hours_to },
+      field.slot_duration || 60
+    );
   }
 
   private timeToMinutes(time: string): number {
@@ -345,7 +493,9 @@ export class BookingAPI {
       booking: row.booking_id ? {
         id: row.booking_id,
         user_id: row.booking_user_id,
-        status: row.booking_status
+        status: row.booking_status,
+        user_name: row.user_name || null,
+        user_phone: row.user_phone || null,
       } : null
     }));
   }
@@ -410,14 +560,31 @@ export class BookingAPI {
 
   // ==================== BOOKINGS ====================
 
+  /**
+   * Auto-complete: обновляет статус confirmed → completed для прошедших бронирований
+   * Вызывается автоматически при запросе списка бронирований
+   */
+  private async autoCompleteBookings(): Promise<void> {
+    await this.db.query(
+      `UPDATE bookings b
+       SET status = 'completed'
+       FROM booking_slots s
+       WHERE b.slot_id = s.id
+         AND b.status = 'confirmed'
+         AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.end_time < CURRENT_TIME))`
+    );
+  }
+
   async getMyBookings(userId: string): Promise<BookingDetails[]> {
+    // Auto-complete прошедших confirmed бронирований
+    await this.autoCompleteBookings();
     const result = await this.db.query(
       `SELECT
          b.id as booking_id, b.slot_id, b.user_id, b.status as booking_status, b.comment as booking_comment, b.created_at as booking_created_at,
          s.field_id, s.date, s.start_time, s.end_time, s.is_blocked, s.block_reason, s.created_at as slot_created_at,
          f.id as field_id, f.campaign_id, f.name, f.sport_types, f.is_indoor, f.photos,
          f.price_per_hour, f.status as field_status, f.slot_duration, f.working_hours_from,
-         f.working_hours_to, f.working_days, f.client_info, f.created_at as field_created_at
+         f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at
        FROM bookings b
        JOIN booking_slots s ON b.slot_id = s.id
        JOIN fields f ON s.field_id = f.id
@@ -430,13 +597,16 @@ export class BookingAPI {
   }
 
   async getBookingsByCampaign(campaignId: string): Promise<BookingDetails[]> {
+    // Auto-complete прошедших confirmed бронирований
+    await this.autoCompleteBookings();
+
     const result = await this.db.query(
       `SELECT
          b.id as booking_id, b.slot_id, b.user_id, b.status as booking_status, b.comment as booking_comment, b.created_at as booking_created_at,
          s.field_id, s.date, s.start_time, s.end_time, s.is_blocked, s.block_reason, s.created_at as slot_created_at,
          f.id as field_id, f.campaign_id, f.name, f.sport_types, f.is_indoor, f.photos,
          f.price_per_hour, f.status as field_status, f.slot_duration, f.working_hours_from,
-         f.working_hours_to, f.working_days, f.client_info, f.created_at as field_created_at,
+         f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at,
          u.name as user_name, u.phone as user_phone, u.email as user_email
        FROM bookings b
        JOIN booking_slots s ON b.slot_id = s.id
@@ -486,6 +656,7 @@ export class BookingAPI {
         working_hours_from: row.working_hours_from,
         working_hours_to: row.working_hours_to,
         working_days: row.working_days || [],
+        working_timetable: row.working_timetable || null,
         client_info: row.client_info,
         created_at: row.field_created_at || row.created_at
       }
@@ -525,19 +696,98 @@ export class BookingAPI {
     return result.rows[0];
   }
 
-  async updateBookingStatus(bookingId: string, status: BookingStatus): Promise<Booking | null> {
+  /**
+   * Матрица валидных переходов между статусами
+   * Ключ - текущий статус, значение - массив допустимых целевых статусов
+   */
+  private static readonly STATUS_TRANSITIONS: Record<BookingStatus, BookingStatus[]> = {
+    pending: ['confirmed', 'rejected', 'cancelled_by_client', 'cancelled_by_admin'],
+    confirmed: ['completed', 'cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'no_show'],
+    completed: ['no_show', 'cancelled_by_admin'],
+    no_show: ['cancelled_by_admin'],
+    rejected: ['cancelled_by_admin'],
+    cancelled_by_client: ['cancelled_by_admin'],
+    cancelled_by_facility: ['cancelled_by_admin'],
+    cancelled_by_admin: [],
+  };
+
+  /**
+   * Переходы, требующие проверки времени слота
+   */
+  private static readonly TIME_RESTRICTED_TRANSITIONS: Record<string, 'before_start' | 'after_start'> = {
+    'pending->confirmed': 'before_start',
+    'pending->rejected': 'before_start',
+    'pending->cancelled_by_client': 'before_start',
+    'confirmed->cancelled_by_client': 'before_start',
+    'confirmed->cancelled_by_facility': 'before_start',
+    'confirmed->no_show': 'after_start',
+    'completed->no_show': 'after_start',
+  };
+
+  async updateBookingStatus(bookingId: string, newStatus: BookingStatus): Promise<Booking | null> {
+    // Получаем текущее бронирование с данными слота
+    const bookingWithSlot = await this.db.query<{
+      booking_status: BookingStatus;
+      slot_date: string;
+      start_time: string;
+      end_time: string;
+    }>(
+      `SELECT b.status as booking_status, s.date as slot_date, s.start_time, s.end_time
+       FROM bookings b
+       JOIN booking_slots s ON b.slot_id = s.id
+       WHERE b.id = $1`,
+      [bookingId]
+    );
+
+    if (bookingWithSlot.rows.length === 0) {
+      return null;
+    }
+
+    const { booking_status: currentStatus, slot_date, start_time } = bookingWithSlot.rows[0];
+
+    // Проверяем валидность перехода
+    const allowedTransitions = BookingAPI.STATUS_TRANSITIONS[currentStatus];
+    if (!allowedTransitions.includes(newStatus)) {
+      throw new Error(`Invalid status transition: ${currentStatus} -> ${newStatus}`);
+    }
+
+    // Проверяем временные ограничения
+    const transitionKey = `${currentStatus}->${newStatus}`;
+    const timeRestriction = BookingAPI.TIME_RESTRICTED_TRANSITIONS[transitionKey];
+
+    if (timeRestriction) {
+      const slotStartTime = new Date(`${slot_date}T${start_time}`);
+      const now = new Date();
+      const slotStarted = slotStartTime < now;
+
+      if (timeRestriction === 'before_start' && slotStarted) {
+        throw new Error(`Transition ${currentStatus} -> ${newStatus} is only allowed before slot starts`);
+      }
+      if (timeRestriction === 'after_start' && !slotStarted) {
+        throw new Error(`Transition ${currentStatus} -> ${newStatus} is only allowed after slot starts`);
+      }
+    }
+
+    // Выполняем обновление
     const result = await this.db.query<Booking>(
       'UPDATE bookings SET status = $1 WHERE id = $2 RETURNING *',
-      [status, bookingId]
+      [newStatus, bookingId]
     );
     return result.rows[0] || null;
   }
 
   async cancelBooking(bookingId: string, userId: string): Promise<boolean> {
+    // Клиент может отменить только до начала слота
     const result = await this.db.query(
-      `UPDATE bookings SET status = 'cancelled_by_client'
-       WHERE id = $1 AND user_id = $2 AND status IN ('pending', 'confirmed')
-       RETURNING id`,
+      `UPDATE bookings b
+       SET status = 'cancelled_by_client'
+       FROM booking_slots s
+       WHERE b.id = $1
+         AND b.user_id = $2
+         AND b.slot_id = s.id
+         AND b.status IN ('pending', 'confirmed')
+         AND (s.date > CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time > CURRENT_TIME))
+       RETURNING b.id`,
       [bookingId, userId]
     );
     return (result.rowCount ?? 0) > 0;
@@ -552,13 +802,16 @@ export class BookingAPI {
   }
 
   async getBookingDetailsById(bookingId: string, userId: string): Promise<BookingDetails | null> {
+    // Auto-complete если это прошедшее confirmed бронирование
+    await this.autoCompleteBookings();
+
     const result = await this.db.query(
       `SELECT
          b.id as booking_id, b.slot_id, b.user_id, b.status as booking_status, b.comment as booking_comment, b.created_at as booking_created_at,
          s.field_id, s.date, s.start_time, s.end_time, s.is_blocked, s.block_reason, s.created_at as slot_created_at,
          f.id as field_id, f.campaign_id, f.name, f.sport_types, f.is_indoor, f.photos,
          f.price_per_hour, f.status as field_status, f.slot_duration, f.working_hours_from,
-         f.working_hours_to, f.working_days, f.client_info, f.created_at as field_created_at
+         f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at
        FROM bookings b
        JOIN booking_slots s ON b.slot_id = s.id
        JOIN fields f ON s.field_id = f.id

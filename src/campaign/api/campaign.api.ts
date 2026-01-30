@@ -184,6 +184,7 @@ export class CampaignAPI {
       facilities: normalizeEnumArray(campaign.facilities),
       sports: normalizeEnumArray(campaign.sports),
       media: campaign.media,
+      bookingInfo: campaign.booking_info,
       createdAt: campaign.created_at,
       updatedAt: campaign.updated_at
     };
