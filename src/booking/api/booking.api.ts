@@ -964,4 +964,80 @@ export class BookingAPI {
     );
     return result.rows[0]?.campaign_id || null;
   }
+
+  /**
+   * Получить все брони на платформе (только для ADMIN)
+   */
+  async getAllBookings(): Promise<BookingDetails[]> {
+    // Auto-complete прошедших confirmed бронирований
+    await this.autoCompleteBookings();
+
+    const result = await this.db.query(
+      `SELECT
+         b.id as booking_id, b.slot_id, b.user_id, b.status as booking_status, b.comment as booking_comment,
+         b.contact_name, b.contact_phone, b.created_at as booking_created_at,
+         s.field_id, s.date, s.start_time, s.end_time, s.is_blocked, s.block_reason, s.created_at as slot_created_at,
+         f.id as field_id, f.campaign_id, f.name, f.sport_types, f.is_indoor, f.photos,
+         f.price_per_hour, f.status as field_status, f.slot_duration, f.working_hours_from,
+         f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at,
+         c.name as campaign_name,
+         COALESCE(b.contact_name, u.name) as user_name,
+         COALESCE(b.contact_phone, u.phone) as user_phone,
+         u.email as user_email
+       FROM bookings b
+       JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
+       LEFT JOIN users u ON b.user_id = u.id
+       ORDER BY b.created_at DESC`
+    );
+
+    return this.mapBookingDetailsWithCampaign(result.rows);
+  }
+
+  private mapBookingDetailsWithCampaign(rows: any[]): BookingDetails[] {
+    return rows.map(row => ({
+      id: row.booking_id,
+      slot_id: row.slot_id,
+      user_id: row.user_id,
+      status: row.booking_status,
+      comment: row.booking_comment || null,
+      contact_name: row.contact_name || null,
+      contact_phone: row.contact_phone || null,
+      created_at: row.booking_created_at,
+      user: row.user_name !== undefined ? {
+        name: row.user_name || null,
+        phone: row.user_phone || null,
+        email: row.user_email || null,
+      } : undefined,
+      slot: {
+        id: row.slot_id,
+        field_id: row.field_id,
+        date: typeof row.date === 'object' ? row.date.toISOString().split('T')[0] : row.date,
+        start_time: row.start_time,
+        end_time: row.end_time,
+        is_blocked: row.is_blocked || false,
+        block_reason: row.block_reason || null,
+        created_at: row.slot_created_at
+      },
+      field: {
+        id: row.field_id,
+        campaign_id: row.campaign_id,
+        name: row.name,
+        sport_types: row.sport_types || [],
+        is_indoor: row.is_indoor || false,
+        photos: row.photos || [],
+        price_per_hour: row.price_per_hour,
+        status: row.field_status,
+        slot_duration: row.slot_duration || 60,
+        working_hours_from: row.working_hours_from,
+        working_hours_to: row.working_hours_to,
+        working_days: row.working_days || [],
+        working_timetable: row.working_timetable || null,
+        client_info: row.client_info,
+        created_at: row.field_created_at || row.created_at
+      },
+      campaign_name: row.campaign_name || null,
+    }));
+  }
 }

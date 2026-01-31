@@ -239,4 +239,33 @@ export class AuthAPI {
 
     return { message: 'Password updated successfully', userId };
   }
+
+  /**
+   * Получить всех пользователей (только для ADMIN)
+   */
+  async getAllUsers(): Promise<Array<{
+    id: string;
+    email: string;
+    name: string | null;
+    phone: string | null;
+    role: USER_ROLE;
+    email_verified: EMAIL_STATUS;
+    created_at: string;
+  }>> {
+    const result = await this.db.query<DbUser>(
+      `SELECT id, email, name, phone, role, email_verified, created_at
+       FROM users
+       ORDER BY created_at DESC`
+    );
+
+    return result.rows.map(user => ({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      phone: user.phone,
+      role: user.role,
+      email_verified: user.email_verified ?? EMAIL_STATUS.NOT_VERIFIED,
+      created_at: user.created_at
+    }));
+  }
 }

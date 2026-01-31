@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { AuthAPI } from '../api/auth.api';
+import { BookingAPI } from '../../booking/api/booking.api';
 import jwt from 'jsonwebtoken';
 import type { Pool } from 'pg';
 import { AUTH_COOKIE_NAME, AUTH_TOKEN_TTL_SECONDS, getJwtSecret } from '../../config/auth';
@@ -13,16 +14,19 @@ import {
   USER_ROLE
 } from '../model/auth.model';
 import { authMiddleware, AuthRequest as AuthReq } from '../middleware/auth.middleware';
+import { adminMiddleware } from '../middleware/admin.middleware';
 import type { DbUser } from '../model/user.model';
 
 export class AuthRoutes {
   private router: Router;
   private authAPI: AuthAPI;
+  private bookingAPI: BookingAPI;
   private db: Pool;
 
   constructor(db: Pool) {
     this.router = Router();
     this.authAPI = new AuthAPI(db);
+    this.bookingAPI = new BookingAPI(db);
     this.db = db;
     this.initializeRoutes();
   }
@@ -312,6 +316,33 @@ export class AuthRoutes {
           id: profile.id,
           email_verified: profile.email_verified
         });
+      } catch (error) {
+        if (error instanceof Error) {
+          res.status(400).json({ error: error.message });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    // Admin routes
+    this.router.get('/admin/users', adminMiddleware(this.db), async (_req: AuthReq, res: Response) => {
+      try {
+        const users = await this.authAPI.getAllUsers();
+        res.json(users);
+      } catch (error) {
+        if (error instanceof Error) {
+          res.status(400).json({ error: error.message });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    this.router.get('/admin/bookings', adminMiddleware(this.db), async (_req: AuthReq, res: Response) => {
+      try {
+        const bookings = await this.bookingAPI.getAllBookings();
+        res.json(bookings);
       } catch (error) {
         if (error instanceof Error) {
           res.status(400).json({ error: error.message });
