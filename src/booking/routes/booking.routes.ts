@@ -321,6 +321,61 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   });
 
+  // POST /booking/admin — создать бронь вручную (только владелец campaign)
+  // Бронь создаётся сразу со статусом confirmed
+  router.post(
+    '/admin',
+    authMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const { slot_id, contact_name, contact_phone, comment } = req.body;
+
+        if (!slot_id) {
+          res.status(400).json({ error: 'slot_id is required' });
+          return;
+        }
+        if (!isValidUUID(slot_id)) {
+          res.status(400).json({ error: 'Invalid slot_id format' });
+          return;
+        }
+        if (!contact_phone) {
+          res.status(400).json({ error: 'contact_phone is required' });
+          return;
+        }
+
+        // Проверяем что пользователь - владелец кампании этого слота
+        const campaignId = await api.getCampaignIdBySlotId(slot_id);
+        if (!campaignId) {
+          res.status(404).json({ error: 'Slot not found' });
+          return;
+        }
+
+        // Проверяем владельца
+        const campaignOwner = await db.query(
+          'SELECT user_id FROM campaign_info WHERE id = $1',
+          [campaignId]
+        );
+        if (campaignOwner.rows[0]?.user_id !== req.userId) {
+          res.status(403).json({ error: 'Forbidden' });
+          return;
+        }
+
+        const booking = await api.createAdminBooking(slot_id, contact_name, contact_phone, comment);
+        res.status(201).json(booking);
+      } catch (error) {
+        if ((error as Error).message === 'Slot already booked') {
+          res.status(409).json({ error: 'Slot already booked' });
+        } else if ((error as Error).message === 'Slot not found') {
+          res.status(404).json({ error: 'Slot not found' });
+        } else if ((error as Error).message === 'Slot is blocked') {
+          res.status(400).json({ error: 'Slot is blocked' });
+        } else {
+          res.status(400).json({ error: (error as Error).message });
+        }
+      }
+    }
+  );
+
   // GET /booking/:id — получить детали брони (владелец брони)
   router.get('/:id', authMiddleware(db), async (req: AuthRequest, res: Response) => {
     try {
