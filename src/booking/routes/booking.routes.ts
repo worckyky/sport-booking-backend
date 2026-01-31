@@ -299,7 +299,7 @@ export default function createBookingRoutes(db: Pool): Router {
   // POST /booking — создать бронь (авторизованный пользователь)
   router.post('/', authMiddleware(db), async (req: AuthRequest, res: Response) => {
     try {
-      const { slot_id, comment } = req.body;
+      const { slot_id, comment, contact_name, contact_phone } = req.body;
       if (!slot_id) {
         res.status(400).json({ error: 'slot_id is required' });
         return;
@@ -308,7 +308,7 @@ export default function createBookingRoutes(db: Pool): Router {
         res.status(400).json({ error: 'Invalid slot_id format' });
         return;
       }
-      const booking = await api.createBooking(slot_id, req.userId!, comment);
+      const booking = await api.createBooking(slot_id, req.userId!, comment, contact_name, contact_phone);
       res.status(201).json(booking);
     } catch (error) {
       if ((error as Error).message === 'Slot already booked') {

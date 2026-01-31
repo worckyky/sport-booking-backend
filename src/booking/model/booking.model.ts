@@ -108,15 +108,19 @@ export type BookingStatus =
 export interface Booking {
   id: string;
   slot_id: string;
-  user_id: string;
+  user_id: string | null;  // nullable для гостевых бронирований
   status: BookingStatus;
   comment: string | null;
+  contact_name: string | null;
+  contact_phone: string | null;
   created_at: string;
 }
 
 export interface CreateBookingRequest {
   slot_id: string;
   comment?: string;
+  contact_name?: string;
+  contact_phone?: string;
 }
 
 export interface UpdateBookingRequest {
@@ -128,10 +132,10 @@ export interface UpdateBookingRequest {
 export interface SlotWithBooking extends BookingSlot {
   booking: {
     id: string;
-    user_id: string;
+    user_id: string | null;
     status: BookingStatus;
-    user_name: string | null;
-    user_phone: string | null;
+    user_name: string | null;   // из профиля или contact_name
+    user_phone: string | null;  // из профиля или contact_phone
   } | null;
 }
 

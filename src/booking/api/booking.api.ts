@@ -14,6 +14,7 @@ import {
   DayOfWeek
 } from '../model/booking.model';
 import { toJsonbValue } from '../../utils/pg';
+import { normalizePhone } from '../../utils/phone';
 
 interface WorkingTimetable {
   monday?: { from: string; to: string };
@@ -362,7 +363,8 @@ export class BookingAPI {
     // Проверяем существующие слоты
     const existingSlots = await this.db.query(
       `SELECT s.*, b.id as booking_id, b.user_id as booking_user_id, b.status as booking_status,
-              u.name as user_name, u.phone as user_phone
+              COALESCE(b.contact_name, u.name) as user_name,
+              COALESCE(b.contact_phone, u.phone) as user_phone
        FROM booking_slots s
        LEFT JOIN bookings b ON s.id = b.slot_id
        LEFT JOIN users u ON b.user_id = u.id
@@ -602,16 +604,19 @@ export class BookingAPI {
 
     const result = await this.db.query(
       `SELECT
-         b.id as booking_id, b.slot_id, b.user_id, b.status as booking_status, b.comment as booking_comment, b.created_at as booking_created_at,
+         b.id as booking_id, b.slot_id, b.user_id, b.status as booking_status, b.comment as booking_comment,
+         b.contact_name, b.contact_phone, b.created_at as booking_created_at,
          s.field_id, s.date, s.start_time, s.end_time, s.is_blocked, s.block_reason, s.created_at as slot_created_at,
          f.id as field_id, f.campaign_id, f.name, f.sport_types, f.is_indoor, f.photos,
          f.price_per_hour, f.status as field_status, f.slot_duration, f.working_hours_from,
          f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at,
-         u.name as user_name, u.phone as user_phone, u.email as user_email
+         COALESCE(b.contact_name, u.name) as user_name,
+         COALESCE(b.contact_phone, u.phone) as user_phone,
+         u.email as user_email
        FROM bookings b
        JOIN booking_slots s ON b.slot_id = s.id
        JOIN fields f ON s.field_id = f.id
-       JOIN users u ON b.user_id = u.id
+       LEFT JOIN users u ON b.user_id = u.id
        WHERE f.campaign_id = $1
        ORDER BY s.date DESC, s.start_time DESC`,
       [campaignId]
@@ -627,6 +632,8 @@ export class BookingAPI {
       user_id: row.user_id,
       status: row.booking_status,
       comment: row.booking_comment || null,
+      contact_name: row.contact_name || null,
+      contact_phone: row.contact_phone || null,
       created_at: row.booking_created_at,
       user: row.user_name !== undefined ? {
         name: row.user_name || null,
@@ -663,7 +670,13 @@ export class BookingAPI {
     }));
   }
 
-  async createBooking(slotId: string, userId: string, comment?: string): Promise<Booking> {
+  async createBooking(
+    slotId: string,
+    userId: string | null,
+    comment?: string,
+    contactName?: string,
+    contactPhone?: string
+  ): Promise<Booking> {
     // Проверяем что слот существует, не заблокирован и свободен
     const slot = await this.db.query(
       'SELECT id, is_blocked FROM booking_slots WHERE id = $1',
@@ -687,11 +700,19 @@ export class BookingAPI {
       throw new Error('Slot already booked');
     }
 
+    // Нормализуем телефон для единообразия (для будущей связки по телефону)
+    const normalizedPhone = normalizePhone(contactPhone);
+
+    // Для гостевых бронирований (без user_id) требуем контактный телефон
+    if (!userId && !normalizedPhone) {
+      throw new Error('Contact phone is required for guest bookings');
+    }
+
     const result = await this.db.query<Booking>(
-      `INSERT INTO bookings (slot_id, user_id, status, comment)
-       VALUES ($1, $2, 'pending', $3)
+      `INSERT INTO bookings (slot_id, user_id, status, comment, contact_name, contact_phone)
+       VALUES ($1, $2, 'pending', $3, $4, $5)
        RETURNING *`,
-      [slotId, userId, comment ?? null]
+      [slotId, userId, comment ?? null, contactName ?? null, normalizedPhone]
     );
     return result.rows[0];
   }
@@ -756,7 +777,11 @@ export class BookingAPI {
     const timeRestriction = BookingAPI.TIME_RESTRICTED_TRANSITIONS[transitionKey];
 
     if (timeRestriction) {
-      const slotStartTime = new Date(`${slot_date}T${start_time}`);
+      // Нормализуем дату (PostgreSQL может вернуть Date объект)
+      const dateStr = typeof slot_date === 'object'
+        ? (slot_date as Date).toISOString().split('T')[0]
+        : slot_date;
+      const slotStartTime = new Date(`${dateStr}T${start_time}`);
       const now = new Date();
       const slotStarted = slotStartTime < now;
 
