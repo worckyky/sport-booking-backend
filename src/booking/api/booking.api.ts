@@ -224,25 +224,191 @@ export class BookingAPI {
     return result.rows[0];
   }
 
+  /**
+   * Проверяет, есть ли активные брони, которые не вписываются в новое расписание
+   * Возвращает список конфликтующих бронирований
+   */
+  async getConflictingBookingsForScheduleChange(
+    fieldId: string,
+    newTimetable: FieldWorkingTimetable
+  ): Promise<Array<{ bookingId: string; date: string; startTime: string; endTime: string; clientName: string | null }>> {
+    const dayNames: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+    // Получаем все будущие слоты с активными бронями
+    const result = await this.db.query<{
+      booking_id: string;
+      date: Date;
+      start_time: string;
+      end_time: string;
+      contact_name: string | null;
+      user_name: string | null;
+    }>(
+      `SELECT b.id as booking_id, s.date, s.start_time, s.end_time,
+              COALESCE(b.contact_name, u.name) as user_name, b.contact_name
+       FROM bookings b
+       JOIN booking_slots s ON b.slot_id = s.id
+       LEFT JOIN users u ON b.user_id = u.id
+       WHERE s.field_id = $1
+         AND b.status IN ('pending', 'confirmed')
+         AND s.date >= CURRENT_DATE
+       ORDER BY s.date, s.start_time`,
+      [fieldId]
+    );
+
+    const conflicts: Array<{ bookingId: string; date: string; startTime: string; endTime: string; clientName: string | null }> = [];
+
+    for (const row of result.rows) {
+      const date = typeof row.date === 'object' ? row.date : new Date(row.date);
+      const dayOfWeek = dayNames[date.getDay()];
+      const schedule = newTimetable[dayOfWeek];
+
+      // Если в этот день выходной или слот не вписывается в рабочее время
+      const slotStart = this.timeToMinutes(row.start_time);
+      const slotEnd = this.timeToMinutes(row.end_time);
+
+      let isConflict = false;
+
+      if (!schedule) {
+        // День стал выходным
+        isConflict = true;
+      } else {
+        const workStart = this.timeToMinutes(schedule.from);
+        const workEnd = this.timeToMinutes(schedule.to);
+
+        // Слот выходит за рамки рабочего времени
+        if (slotStart < workStart || slotEnd > workEnd) {
+          isConflict = true;
+        }
+
+        // Слот попадает в перерыв
+        if (!isConflict && schedule.breaks) {
+          for (const brk of schedule.breaks) {
+            const brkStart = this.timeToMinutes(brk.from);
+            const brkEnd = this.timeToMinutes(brk.to);
+            if (slotStart < brkEnd && slotEnd > brkStart) {
+              isConflict = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (isConflict) {
+        conflicts.push({
+          bookingId: row.booking_id,
+          date: date.toISOString().split('T')[0],
+          startTime: row.start_time,
+          endTime: row.end_time,
+          clientName: row.user_name || row.contact_name || null,
+        });
+      }
+    }
+
+    return conflicts;
+  }
+
+  /**
+   * Удаляет свободные слоты, которые не вписываются в новое расписание
+   */
+  async deleteOrphanedSlots(fieldId: string, newTimetable: FieldWorkingTimetable): Promise<number> {
+    const dayNames: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+    // Получаем все будущие слоты без бронирований
+    const result = await this.db.query<{ id: string; date: Date; start_time: string; end_time: string }>(
+      `SELECT s.id, s.date, s.start_time, s.end_time
+       FROM booking_slots s
+       LEFT JOIN bookings b ON s.id = b.slot_id
+       WHERE s.field_id = $1
+         AND s.date >= CURRENT_DATE
+         AND b.id IS NULL
+         AND s.is_blocked = false`,
+      [fieldId]
+    );
+
+    const toDelete: string[] = [];
+
+    for (const row of result.rows) {
+      const date = typeof row.date === 'object' ? row.date : new Date(row.date);
+      const dayOfWeek = dayNames[date.getDay()];
+      const schedule = newTimetable[dayOfWeek];
+
+      const slotStart = this.timeToMinutes(row.start_time);
+      const slotEnd = this.timeToMinutes(row.end_time);
+
+      let shouldDelete = false;
+
+      if (!schedule) {
+        shouldDelete = true;
+      } else {
+        const workStart = this.timeToMinutes(schedule.from);
+        const workEnd = this.timeToMinutes(schedule.to);
+
+        if (slotStart < workStart || slotEnd > workEnd) {
+          shouldDelete = true;
+        }
+
+        if (!shouldDelete && schedule.breaks) {
+          for (const brk of schedule.breaks) {
+            const brkStart = this.timeToMinutes(brk.from);
+            const brkEnd = this.timeToMinutes(brk.to);
+            if (slotStart < brkEnd && slotEnd > brkStart) {
+              shouldDelete = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (shouldDelete) {
+        toDelete.push(row.id);
+      }
+    }
+
+    if (toDelete.length > 0) {
+      await this.db.query(
+        `DELETE FROM booking_slots WHERE id = ANY($1)`,
+        [toDelete]
+      );
+    }
+
+    return toDelete.length;
+  }
+
   async updateField(fieldId: string, data: UpdateFieldRequest): Promise<Field | null> {
     // Валидация: время работы поля не может выходить за время работы площадки
     const needsValidation = data.working_hours_from !== undefined ||
                             data.working_hours_to !== undefined ||
                             data.working_timetable !== undefined;
 
+    const currentField = await this.getFieldById(fieldId);
+    if (!currentField) {
+      return null;
+    }
+
     if (needsValidation) {
-      const currentField = await this.getFieldById(fieldId);
-      if (currentField) {
-        const campaignTimetable = await this.getCampaignWorkingTimetable(currentField.campaign_id);
-        if (campaignTimetable) {
-          // Валидация нового формата working_timetable
-          if (data.working_timetable !== undefined && data.working_timetable !== null) {
-            this.validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable);
-          }
-          // Валидация legacy формата
-          const newFrom = data.working_hours_from !== undefined ? data.working_hours_from : currentField.working_hours_from;
-          const newTo = data.working_hours_to !== undefined ? data.working_hours_to : currentField.working_hours_to;
-          this.validateFieldWorkingHours(newFrom, newTo, campaignTimetable);
+      const campaignTimetable = await this.getCampaignWorkingTimetable(currentField.campaign_id);
+      if (campaignTimetable) {
+        // Валидация нового формата working_timetable
+        if (data.working_timetable !== undefined && data.working_timetable !== null) {
+          this.validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable);
+        }
+        // Валидация legacy формата
+        const newFrom = data.working_hours_from !== undefined ? data.working_hours_from : currentField.working_hours_from;
+        const newTo = data.working_hours_to !== undefined ? data.working_hours_to : currentField.working_hours_to;
+        this.validateFieldWorkingHours(newFrom, newTo, campaignTimetable);
+      }
+
+      // Проверяем конфликтующие брони при изменении working_timetable
+      if (data.working_timetable !== undefined && data.working_timetable !== null) {
+        const conflicts = await this.getConflictingBookingsForScheduleChange(fieldId, data.working_timetable);
+        if (conflicts.length > 0) {
+          const conflictDetails = conflicts.map(c =>
+            `${c.date} ${c.startTime}-${c.endTime} (${c.clientName || 'клиент'})`
+          ).join(', ');
+          throw new Error(
+            `Невозможно изменить расписание: есть активные брони, которые не вписываются в новое время. ` +
+            `Сначала отмените эти брони: ${conflictDetails}`
+          );
         }
       }
     }
@@ -307,7 +473,18 @@ export class BookingAPI {
       `UPDATE fields SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`,
       values
     );
-    return result.rows[0] || null;
+
+    const updatedField = result.rows[0] || null;
+
+    // Удаляем свободные слоты, которые не вписываются в новое расписание
+    if (updatedField && data.working_timetable !== undefined && data.working_timetable !== null) {
+      const deletedCount = await this.deleteOrphanedSlots(fieldId, data.working_timetable);
+      if (deletedCount > 0) {
+        console.log(`Deleted ${deletedCount} orphaned slots for field ${fieldId}`);
+      }
+    }
+
+    return updatedField;
   }
 
   async deleteField(fieldId: string): Promise<boolean> {
