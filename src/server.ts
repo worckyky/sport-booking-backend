@@ -68,10 +68,11 @@ async function start(): Promise<void> {
     customSiteTitle: 'Sport Booking API Docs'
   }));
 
-  // Rate limiting
+  // Rate limiting (disabled in development)
+  const isDev = process.env.NODE_ENV !== 'production';
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // 100 requests per window
+    max: isDev ? 10000 : 100, // virtually unlimited in dev, 100 in prod
     message: { error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests, please try again later' } },
     standardHeaders: true,
     legacyHeaders: false,
