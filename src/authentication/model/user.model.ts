@@ -9,6 +9,7 @@ export interface DbUser {
   phone: string | null;
   date_of_birth: string | null;
   email_verified: EMAIL_STATUS;
+  is_blocked: boolean;
   campaign_id: string | null;
   created_at: string;
   updated_at: string;

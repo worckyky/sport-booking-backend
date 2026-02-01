@@ -351,6 +351,52 @@ export class AuthRoutes {
         }
       }
     });
+
+    // Block user (admin only)
+    this.router.put('/admin/users/:id/block', adminMiddleware(this.db), async (req: AuthReq, res: Response) => {
+      try {
+        const userId = req.params.id;
+        if (!userId) {
+          return res.status(400).json({ error: 'User ID is required' });
+        }
+
+        const result = await this.authAPI.setUserBlocked(userId, true);
+        res.json(result);
+      } catch (error) {
+        if (error instanceof Error) {
+          if (error.message === 'User not found') {
+            res.status(404).json({ error: error.message });
+          } else {
+            res.status(400).json({ error: error.message });
+          }
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    // Unblock user (admin only)
+    this.router.put('/admin/users/:id/unblock', adminMiddleware(this.db), async (req: AuthReq, res: Response) => {
+      try {
+        const userId = req.params.id;
+        if (!userId) {
+          return res.status(400).json({ error: 'User ID is required' });
+        }
+
+        const result = await this.authAPI.setUserBlocked(userId, false);
+        res.json(result);
+      } catch (error) {
+        if (error instanceof Error) {
+          if (error.message === 'User not found') {
+            res.status(404).json({ error: error.message });
+          } else {
+            res.status(400).json({ error: error.message });
+          }
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
   }
 
   getRouter(): Router {

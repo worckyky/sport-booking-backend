@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import {
   Campaign,
   CampaignResponse,
+  CampaignStatus,
   CreateCampaignRequest,
   UpdateCampaignRequest
 } from '../model/campaign.model';
@@ -169,6 +170,34 @@ export class CampaignAPI {
     }
   }
 
+  async updateCampaignStatus(
+    campaignId: string,
+    status: CampaignStatus
+  ): Promise<CampaignResponse> {
+    const updated = await this.db.query<Campaign>(
+      `
+        UPDATE campaign_info
+        SET status = $1, updated_at = $2
+        WHERE id = $3
+        RETURNING *
+      `,
+      [status, new Date().toISOString(), campaignId]
+    );
+
+    if (updated.rowCount === 0) {
+      throw new Error('Campaign not found');
+    }
+
+    return this.mapCampaignToResponse(updated.rows[0]);
+  }
+
+  async getPublishedCampaigns(): Promise<CampaignResponse[]> {
+    const { rows } = await this.db.query<Campaign>(
+      "SELECT * FROM campaign_info WHERE status = 'published'"
+    );
+    return rows.map((campaign) => this.mapCampaignToResponse(campaign));
+  }
+
   private mapCampaignToResponse(campaign: Campaign): CampaignResponse {
     return {
       id: campaign.id,
@@ -185,6 +214,7 @@ export class CampaignAPI {
       sports: normalizeEnumArray(campaign.sports),
       media: campaign.media,
       bookingInfo: campaign.booking_info,
+      status: campaign.status,
       createdAt: campaign.created_at,
       updatedAt: campaign.updated_at
     };

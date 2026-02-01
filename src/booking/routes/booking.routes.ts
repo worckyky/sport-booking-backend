@@ -6,7 +6,8 @@ import {
   fieldOwnerMiddleware,
   slotOwnerMiddleware,
   bookingCampaignOwnerMiddleware,
-  campaignOwnerMiddleware
+  campaignOwnerMiddleware,
+  notBlockedMiddleware
 } from '../middleware/booking.middleware';
 import { isValidUUID } from '../../utils/uuid';
 
@@ -296,8 +297,8 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   );
 
-  // POST /booking — создать бронь (авторизованный пользователь)
-  router.post('/', authMiddleware(db), async (req: AuthRequest, res: Response) => {
+  // POST /booking — создать бронь (авторизованный пользователь, не заблокированный)
+  router.post('/', authMiddleware(db), notBlockedMiddleware(db), async (req: AuthRequest, res: Response) => {
     try {
       const { slot_id, comment, contact_name, contact_phone } = req.body;
       if (!slot_id) {

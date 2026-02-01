@@ -250,10 +250,11 @@ export class AuthAPI {
     phone: string | null;
     role: USER_ROLE;
     email_verified: EMAIL_STATUS;
+    is_blocked: boolean;
     created_at: string;
   }>> {
     const result = await this.db.query<DbUser>(
-      `SELECT id, email, name, phone, role, email_verified, created_at
+      `SELECT id, email, name, phone, role, email_verified, is_blocked, created_at
        FROM users
        ORDER BY created_at DESC`
     );
@@ -265,7 +266,31 @@ export class AuthAPI {
       phone: user.phone,
       role: user.role,
       email_verified: user.email_verified ?? EMAIL_STATUS.NOT_VERIFIED,
+      is_blocked: user.is_blocked ?? false,
       created_at: user.created_at
     }));
+  }
+
+  /**
+   * Заблокировать/разблокировать пользователя (только для ADMIN)
+   */
+  async setUserBlocked(userId: string, isBlocked: boolean): Promise<{
+    id: string;
+    email: string;
+    is_blocked: boolean;
+  }> {
+    const result = await this.db.query<Pick<DbUser, 'id' | 'email' | 'is_blocked'>>(
+      `UPDATE users
+       SET is_blocked = $1, updated_at = now()
+       WHERE id = $2
+       RETURNING id, email, is_blocked`,
+      [isBlocked, userId]
+    );
+
+    if (result.rowCount === 0) {
+      throw new Error('User not found');
+    }
+
+    return result.rows[0];
   }
 }

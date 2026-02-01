@@ -1,3 +1,10 @@
+export enum CampaignStatus {
+  DRAFT = 'draft',
+  PENDING = 'pending',
+  PUBLISHED = 'published',
+  SUSPENDED = 'suspended'
+}
+
 export enum SocialLinkType {
   VK = 'VK',
   TELEGRAM = 'TELEGRAM',
@@ -106,6 +113,7 @@ export interface Campaign {
   sports: Sport[] | null;
   media: Media | null;
   booking_info: string | null;
+  status: CampaignStatus;
   created_at: string;
   updated_at: string;
 }
@@ -125,6 +133,7 @@ export interface CampaignResponse {
   sports: Sport[] | null;
   media: Media | null;
   bookingInfo: string | null;
+  status: CampaignStatus;
   createdAt: string;
   updatedAt: string;
 }

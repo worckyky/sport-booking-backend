@@ -3,6 +3,37 @@ import type { Pool } from 'pg';
 import { AuthRequest } from '../../authentication/middleware/auth.middleware';
 import { isValidUUID } from '../../utils/uuid';
 
+// Проверяет что пользователь не заблокирован (для создания брони)
+export const notBlockedMiddleware = (db: Pool) => {
+  return async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.userId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const result = await db.query<{ is_blocked: boolean }>(
+        'SELECT is_blocked FROM users WHERE id = $1',
+        [req.userId]
+      );
+
+      if (result.rows.length === 0) {
+        res.status(401).json({ error: 'User not found' });
+        return;
+      }
+
+      if (result.rows[0].is_blocked) {
+        res.status(403).json({ error: 'Your account is blocked. Please contact support.' });
+        return;
+      }
+
+      next();
+    } catch (error) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  };
+};
+
 // Проверяет что пользователь — владелец площадки (campaign), к которой относится field
 export const fieldOwnerMiddleware = (db: Pool) => {
   return async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
