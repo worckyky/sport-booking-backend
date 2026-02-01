@@ -72,7 +72,7 @@ async function start(): Promise<void> {
   const isDev = process.env.NODE_ENV !== 'production';
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: isDev ? 10000 : 100, // virtually unlimited in dev, 100 in prod
+    max: isDev ? 10000 : 500, // virtually unlimited in dev, 500 in prod
     message: { error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests, please try again later' } },
     standardHeaders: true,
     legacyHeaders: false,
