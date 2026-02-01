@@ -16,6 +16,21 @@ import {
 import { toJsonbValue } from '../../utils/pg';
 import { normalizePhone } from '../../utils/phone';
 
+export interface PaginationParams {
+  page?: number;
+  limit?: number;
+}
+
+export interface PaginatedResult<T> {
+  data: T[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
 interface WorkingTimetable {
   monday?: { from: string; to: string };
   tuesday?: { from: string; to: string };
@@ -305,6 +320,56 @@ export class BookingAPI {
     }
 
     return conflicts;
+  }
+
+  /**
+   * Получает активные брони (pending/confirmed) для поля с будущими датами
+   * Используется для предупреждения при отключении поля
+   */
+  async getActiveBookingsForField(
+    fieldId: string
+  ): Promise<Array<{
+    id: string;
+    date: string;
+    startTime: string;
+    endTime: string;
+    status: BookingStatus;
+    clientName: string | null;
+    clientPhone: string | null;
+  }>> {
+    const result = await this.db.query<{
+      id: string;
+      date: Date;
+      start_time: string;
+      end_time: string;
+      status: BookingStatus;
+      contact_name: string | null;
+      user_name: string | null;
+      contact_phone: string | null;
+      user_phone: string | null;
+    }>(
+      `SELECT b.id, s.date, s.start_time, s.end_time, b.status,
+              b.contact_name, u.name as user_name,
+              b.contact_phone, u.phone as user_phone
+       FROM bookings b
+       JOIN booking_slots s ON b.slot_id = s.id
+       LEFT JOIN users u ON b.user_id = u.id
+       WHERE s.field_id = $1
+         AND b.status IN ('pending', 'confirmed')
+         AND s.date >= CURRENT_DATE
+       ORDER BY s.date, s.start_time`,
+      [fieldId]
+    );
+
+    return result.rows.map(row => ({
+      id: row.id,
+      date: typeof row.date === 'object' ? row.date.toISOString().split('T')[0] : row.date,
+      startTime: row.start_time,
+      endTime: row.end_time,
+      status: row.status,
+      clientName: row.contact_name || row.user_name || null,
+      clientPhone: row.contact_phone || row.user_phone || null,
+    }));
   }
 
   /**
@@ -811,9 +876,27 @@ export class BookingAPI {
     return this.mapBookingDetails(result.rows);
   }
 
-  async getBookingsByCampaign(campaignId: string): Promise<BookingDetails[]> {
+  async getBookingsByCampaign(
+    campaignId: string,
+    pagination?: PaginationParams
+  ): Promise<PaginatedResult<BookingDetails>> {
     // Auto-complete прошедших confirmed бронирований
     await this.runAutoStatusUpdates();
+
+    const page = pagination?.page || 1;
+    const limit = pagination?.limit || 50;
+    const offset = (page - 1) * limit;
+
+    // Get total count
+    const countResult = await this.db.query(
+      `SELECT COUNT(*) as total
+       FROM bookings b
+       JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       WHERE f.campaign_id = $1`,
+      [campaignId]
+    );
+    const total = parseInt(countResult.rows[0].total, 10);
 
     const result = await this.db.query(
       `SELECT
@@ -831,11 +914,20 @@ export class BookingAPI {
        JOIN fields f ON s.field_id = f.id
        LEFT JOIN users u ON b.user_id = u.id
        WHERE f.campaign_id = $1
-       ORDER BY s.date DESC, s.start_time DESC`,
-      [campaignId]
+       ORDER BY s.date DESC, s.start_time DESC
+       LIMIT $2 OFFSET $3`,
+      [campaignId, limit, offset]
     );
 
-    return this.mapBookingDetails(result.rows);
+    return {
+      data: this.mapBookingDetails(result.rows),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   private mapBookingDetails(rows: any[]): BookingDetails[] {
@@ -1171,9 +1263,19 @@ export class BookingAPI {
   /**
    * Получить все брони на платформе (только для ADMIN)
    */
-  async getAllBookings(): Promise<BookingDetails[]> {
+  async getAllBookings(pagination?: PaginationParams): Promise<PaginatedResult<BookingDetails>> {
     // Auto-complete прошедших confirmed бронирований
     await this.runAutoStatusUpdates();
+
+    const page = pagination?.page || 1;
+    const limit = pagination?.limit || 50;
+    const offset = (page - 1) * limit;
+
+    // Get total count
+    const countResult = await this.db.query(
+      `SELECT COUNT(*) as total FROM bookings`
+    );
+    const total = parseInt(countResult.rows[0].total, 10);
 
     const result = await this.db.query(
       `SELECT
@@ -1192,10 +1294,20 @@ export class BookingAPI {
        JOIN fields f ON s.field_id = f.id
        JOIN campaign_info c ON f.campaign_id = c.id
        LEFT JOIN users u ON b.user_id = u.id
-       ORDER BY b.created_at DESC`
+       ORDER BY b.created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
     );
 
-    return this.mapBookingDetailsWithCampaign(result.rows);
+    return {
+      data: this.mapBookingDetailsWithCampaign(result.rows),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   private mapBookingDetailsWithCampaign(rows: any[]): BookingDetails[] {

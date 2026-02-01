@@ -339,10 +339,15 @@ export class AuthRoutes {
       }
     });
 
-    this.router.get('/admin/bookings', adminMiddleware(this.db), async (_req: AuthReq, res: Response) => {
+    this.router.get('/admin/bookings', adminMiddleware(this.db), async (req: AuthReq, res: Response) => {
       try {
-        const bookings = await this.bookingAPI.getAllBookings();
-        res.json(bookings);
+        const { page, limit } = req.query;
+        const pagination = {
+          page: page ? parseInt(page as string, 10) : undefined,
+          limit: limit ? parseInt(limit as string, 10) : undefined,
+        };
+        const result = await this.bookingAPI.getAllBookings(pagination);
+        res.json(result);
       } catch (error) {
         if (error instanceof Error) {
           res.status(400).json({ error: error.message });

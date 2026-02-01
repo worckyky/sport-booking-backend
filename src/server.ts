@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.config';
 import { AuthRoutes } from './authentication/routes/auth.routes';
@@ -67,10 +68,27 @@ async function start(): Promise<void> {
     customSiteTitle: 'Sport Booking API Docs'
   }));
 
-  // Use routes
-  app.use('/auth', authRoutes.getRouter());
+  // Rate limiting
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // 100 requests per window
+    message: { error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests, please try again later' } },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  const bookingLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: process.env.NODE_ENV === 'production' ? 60 : 200, // 60 in prod, 200 in dev
+    message: { error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many booking requests, please slow down' } },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // Use routes with rate limiting
+  app.use('/auth', authLimiter, authRoutes.getRouter());
   app.use('/campaign', campaignRoutes);
-  app.use('/booking', bookingRoutes);
+  app.use('/booking', bookingLimiter, bookingRoutes);
 
   // Health check endpoint
   app.get('/health', (req: Request, res: Response<HealthResponse>) => {

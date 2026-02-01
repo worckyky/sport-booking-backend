@@ -10,6 +10,7 @@ import {
   notBlockedMiddleware
 } from '../middleware/booking.middleware';
 import { isValidUUID } from '../../utils/uuid';
+import { Errors, ErrorCode, handleError, sendError } from '../../utils/errors';
 
 export default function createBookingRoutes(db: Pool): Router {
   const router = Router();
@@ -22,17 +23,15 @@ export default function createBookingRoutes(db: Pool): Router {
     try {
       const { campaign_id } = req.query;
       if (!campaign_id || typeof campaign_id !== 'string') {
-        res.status(400).json({ error: 'campaign_id query parameter required' });
-        return;
+        return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'campaign_id query parameter required', 'campaign_id');
       }
       if (!isValidUUID(campaign_id)) {
-        res.status(400).json({ error: 'Invalid campaign_id format' });
-        return;
+        return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid campaign_id format', 'campaign_id');
       }
       const fields = await api.getFieldsByCampaign(campaign_id);
       res.json(fields);
     } catch (error) {
-      res.status(500).json({ error: 'Internal server error' });
+      Errors.internal(res);
     }
   });
 
@@ -53,6 +52,24 @@ export default function createBookingRoutes(db: Pool): Router {
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+
+  // GET /booking/fields/:id/active-bookings — активные брони поля (только владелец)
+  router.get(
+    '/fields/:id/active-bookings',
+    authMiddleware(db),
+    fieldOwnerMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        if (!isValidUUID(req.params.id)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid field ID format', 'id');
+        }
+        const bookings = await api.getActiveBookingsForField(req.params.id);
+        res.json(bookings);
+      } catch (error) {
+        Errors.internal(res);
+      }
+    }
+  );
 
   // POST /booking/fields — создать поле (только владелец campaign)
   router.post(
@@ -277,20 +294,24 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   });
 
-  // GET /booking?campaign_id= — бронирования площадки (только владелец campaign)
+  // GET /booking?campaign_id=&page=&limit= — бронирования площадки (только владелец campaign)
   router.get(
     '/',
     authMiddleware(db),
     campaignOwnerMiddleware(db),
     async (req: AuthRequest, res: Response) => {
       try {
-        const { campaign_id } = req.query;
+        const { campaign_id, page, limit } = req.query;
         if (!campaign_id || typeof campaign_id !== 'string') {
           res.status(400).json({ error: 'campaign_id query parameter required' });
           return;
         }
-        const bookings = await api.getBookingsByCampaign(campaign_id);
-        res.json(bookings);
+        const pagination = {
+          page: page ? parseInt(page as string, 10) : undefined,
+          limit: limit ? parseInt(limit as string, 10) : undefined,
+        };
+        const result = await api.getBookingsByCampaign(campaign_id, pagination);
+        res.json(result);
       } catch (error) {
         res.status(500).json({ error: 'Internal server error' });
       }
@@ -302,23 +323,15 @@ export default function createBookingRoutes(db: Pool): Router {
     try {
       const { slot_id, comment, contact_name, contact_phone } = req.body;
       if (!slot_id) {
-        res.status(400).json({ error: 'slot_id is required' });
-        return;
+        return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'slot_id is required', 'slot_id');
       }
       if (!isValidUUID(slot_id)) {
-        res.status(400).json({ error: 'Invalid slot_id format' });
-        return;
+        return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid slot_id format', 'slot_id');
       }
       const booking = await api.createBooking(slot_id, req.userId!, comment, contact_name, contact_phone);
       res.status(201).json(booking);
     } catch (error) {
-      if ((error as Error).message === 'Slot already booked') {
-        res.status(409).json({ error: 'Slot already booked' });
-      } else if ((error as Error).message === 'Slot not found') {
-        res.status(404).json({ error: 'Slot not found' });
-      } else {
-        res.status(400).json({ error: (error as Error).message });
-      }
+      handleError(res, error);
     }
   });
 
@@ -404,22 +417,19 @@ export default function createBookingRoutes(db: Pool): Router {
       try {
         const { status } = req.body;
         if (!status) {
-          res.status(400).json({ error: 'status is required' });
-          return;
+          return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'status is required', 'status');
         }
-        const validStatuses = ['pending', 'confirmed', 'completed', 'no_show', 'rejected', 'cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin'];
+        const validStatuses = ['pending', 'confirmed', 'completed', 'no_show', 'rejected', 'expired', 'cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin'];
         if (!validStatuses.includes(status)) {
-          res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
-          return;
+          return sendError(res, 400, ErrorCode.VALIDATION_ERROR, `Invalid status. Must be one of: ${validStatuses.join(', ')}`, 'status');
         }
         const booking = await api.updateBookingStatus(req.params.id, status);
         if (!booking) {
-          res.status(404).json({ error: 'Booking not found' });
-          return;
+          return Errors.notFound(res, 'Booking');
         }
         res.json(booking);
       } catch (error) {
-        res.status(400).json({ error: (error as Error).message });
+        handleError(res, error);
       }
     }
   );
