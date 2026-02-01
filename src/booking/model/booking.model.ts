@@ -101,6 +101,7 @@ export type BookingStatus =
   | 'completed'
   | 'no_show'
   | 'rejected'
+  | 'expired'
   | 'cancelled_by_client'
   | 'cancelled_by_facility'
   | 'cancelled_by_admin';

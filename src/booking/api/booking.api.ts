@@ -765,9 +765,34 @@ export class BookingAPI {
     );
   }
 
+  /**
+   * Auto-expire: обновляет статус pending → expired для просроченных заявок
+   * (владелец не ответил до начала слота)
+   */
+  private async autoExpireBookings(): Promise<void> {
+    await this.db.query(
+      `UPDATE bookings b
+       SET status = 'expired'
+       FROM booking_slots s
+       WHERE b.slot_id = s.id
+         AND b.status = 'pending'
+         AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time < CURRENT_TIME))`
+    );
+  }
+
+  /**
+   * Запускает все авто-обновления статусов
+   */
+  private async runAutoStatusUpdates(): Promise<void> {
+    await Promise.all([
+      this.autoCompleteBookings(),
+      this.autoExpireBookings(),
+    ]);
+  }
+
   async getMyBookings(userId: string): Promise<BookingDetails[]> {
     // Auto-complete прошедших confirmed бронирований
-    await this.autoCompleteBookings();
+    await this.runAutoStatusUpdates();
     const result = await this.db.query(
       `SELECT
          b.id as booking_id, b.slot_id, b.user_id, b.status as booking_status, b.comment as booking_comment, b.created_at as booking_created_at,
@@ -788,7 +813,7 @@ export class BookingAPI {
 
   async getBookingsByCampaign(campaignId: string): Promise<BookingDetails[]> {
     // Auto-complete прошедших confirmed бронирований
-    await this.autoCompleteBookings();
+    await this.runAutoStatusUpdates();
 
     const result = await this.db.query(
       `SELECT
@@ -980,11 +1005,12 @@ export class BookingAPI {
    * Ключ - текущий статус, значение - массив допустимых целевых статусов
    */
   private static readonly STATUS_TRANSITIONS: Record<BookingStatus, BookingStatus[]> = {
-    pending: ['confirmed', 'rejected', 'cancelled_by_client', 'cancelled_by_admin'],
+    pending: ['confirmed', 'rejected', 'expired', 'cancelled_by_client', 'cancelled_by_admin'],
     confirmed: ['completed', 'cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'no_show'],
     completed: ['no_show', 'cancelled_by_admin'],
     no_show: ['cancelled_by_admin'],
     rejected: ['cancelled_by_admin'],
+    expired: ['cancelled_by_admin'],
     cancelled_by_client: ['cancelled_by_admin'],
     cancelled_by_facility: ['cancelled_by_admin'],
     cancelled_by_admin: [],
@@ -1086,7 +1112,7 @@ export class BookingAPI {
 
   async getBookingDetailsById(bookingId: string, userId: string): Promise<BookingDetails | null> {
     // Auto-complete если это прошедшее confirmed бронирование
-    await this.autoCompleteBookings();
+    await this.runAutoStatusUpdates();
 
     const result = await this.db.query(
       `SELECT
@@ -1147,7 +1173,7 @@ export class BookingAPI {
    */
   async getAllBookings(): Promise<BookingDetails[]> {
     // Auto-complete прошедших confirmed бронирований
-    await this.autoCompleteBookings();
+    await this.runAutoStatusUpdates();
 
     const result = await this.db.query(
       `SELECT
