@@ -191,10 +191,111 @@ export class CampaignAPI {
     return this.mapCampaignToResponse(updated.rows[0]);
   }
 
-  async getPublishedCampaigns(): Promise<CampaignResponse[]> {
-    const { rows } = await this.db.query<Campaign>(
-      "SELECT * FROM campaign_info WHERE status = 'published'"
-    );
+  async getPublishedCampaigns(filters?: {
+    sport?: string;
+    q?: string;
+    sort?: string;
+    date?: string;
+  }): Promise<CampaignResponse[]> {
+    const values: unknown[] = [];
+    let paramIndex = 1;
+
+    // If date filter is provided, we need a more complex query with JOINs
+    if (filters?.date) {
+      const conditions: string[] = ["c.status = 'published'"];
+
+      // Search by name
+      if (filters?.q) {
+        conditions.push(`c.name ILIKE $${paramIndex}`);
+        values.push(`%${filters.q}%`);
+        paramIndex++;
+      }
+
+      // Date filter - find campaigns with available slots on this date
+      const dateParamIndex = paramIndex;
+      values.push(filters.date);
+      paramIndex++;
+
+      // Build field sport filter if needed (filter only at field level, not campaign)
+      // This is because fields.sport_types is text[] while campaign.sports is enum[]
+      let fieldSportCondition = '';
+      if (filters?.sport) {
+        fieldSportCondition = `AND $${paramIndex} = ANY(f.sport_types)`;
+        values.push(filters.sport.toUpperCase());
+        paramIndex++;
+      }
+
+      // Sort order
+      let orderBy = 'c.created_at DESC';
+      if (filters?.sort === 'name_asc') {
+        orderBy = 'c.name ASC';
+      } else if (filters?.sort === 'name_desc') {
+        orderBy = 'c.name DESC';
+      }
+
+      const query = `
+        SELECT DISTINCT c.* FROM campaign_info c
+        WHERE ${conditions.join(' AND ')}
+        AND EXISTS (
+          SELECT 1 FROM fields f
+          JOIN booking_slots s ON s.field_id = f.id
+          LEFT JOIN bookings b ON b.slot_id = s.id AND b.status IN ('pending', 'confirmed')
+          WHERE f.campaign_id = c.id
+            AND f.status = 'active'
+            AND s.date = $${dateParamIndex}
+            AND s.is_blocked = false
+            AND b.id IS NULL
+            ${fieldSportCondition}
+        )
+        ORDER BY ${orderBy}
+      `;
+
+      const { rows } = await this.db.query<Campaign>(query, values);
+      return rows.map((campaign) => this.mapCampaignToResponse(campaign));
+    }
+
+    // Simple query without date filter
+    const conditions: string[] = ["status = 'published'"];
+
+    // Search by name (case-insensitive)
+    if (filters?.q) {
+      conditions.push(`name ILIKE $${paramIndex}`);
+      values.push(`%${filters.q}%`);
+      paramIndex++;
+    }
+
+    // Sort order
+    let orderBy = 'created_at DESC'; // default: newest first
+    if (filters?.sort === 'name_asc') {
+      orderBy = 'name ASC';
+    } else if (filters?.sort === 'name_desc') {
+      orderBy = 'name DESC';
+    }
+
+    // Filter by sport through fields.sport_types (text[]) instead of campaign.sports (enum[])
+    // This allows filtering by all sports including those not in the sport_type enum
+    let sportSubquery = '';
+    if (filters?.sport) {
+      sportSubquery = `
+        AND EXISTS (
+          SELECT 1 FROM fields f
+          WHERE f.campaign_id = id
+            AND f.status = 'active'
+            AND $${paramIndex} = ANY(f.sport_types)
+        )
+      `;
+      values.push(filters.sport.toUpperCase());
+      paramIndex++;
+    }
+
+    const query = `
+      SELECT * FROM campaign_info
+      WHERE ${conditions.join(' AND ')}
+      ${sportSubquery}
+      ORDER BY ${orderBy}
+    `;
+
+    const { rows } = await this.db.query<Campaign>(query, values);
     return rows.map((campaign) => this.mapCampaignToResponse(campaign));
   }
 

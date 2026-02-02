@@ -11,11 +11,24 @@ export default function createCampaignRoutes(db: Pool): Router {
   const campaignAPI = new CampaignAPI(db);
 
 // GET /campaign - Получить опубликованные кампании (публичный каталог)
+// Query params: sport, q (search), sort (name_asc, name_desc), date (YYYY-MM-DD)
 router.get(
   '/',
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const campaigns = await campaignAPI.getPublishedCampaigns();
+      const { sport, q, sort, date } = req.query as {
+        sport?: string;
+        q?: string;
+        sort?: string;
+        date?: string;
+      };
+
+      const campaigns = await campaignAPI.getPublishedCampaigns({
+        sport,
+        q,
+        sort,
+        date
+      });
       res.json(campaigns);
     } catch (error) {
       if (error instanceof Error) {
