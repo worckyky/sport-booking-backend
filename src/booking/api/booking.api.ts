@@ -188,7 +188,7 @@ export class BookingAPI {
 
   async getFieldsByCampaign(campaignId: string): Promise<Field[]> {
     const result = await this.db.query<Field>(
-      'SELECT * FROM fields WHERE campaign_id = $1 ORDER BY created_at',
+      'SELECT * FROM fields WHERE campaign_id = $1 AND deleted_at IS NULL ORDER BY created_at',
       [campaignId]
     );
     return result.rows;
@@ -196,7 +196,7 @@ export class BookingAPI {
 
   async getFieldById(fieldId: string): Promise<Field | null> {
     const result = await this.db.query<Field>(
-      'SELECT * FROM fields WHERE id = $1',
+      'SELECT * FROM fields WHERE id = $1 AND deleted_at IS NULL',
       [fieldId]
     );
     return result.rows[0] || null;
@@ -565,8 +565,10 @@ export class BookingAPI {
       throw new Error('Cannot delete field with active bookings');
     }
 
+    // Soft delete: set deleted_at instead of physical deletion
+    // This preserves booking history for reporting
     const result = await this.db.query(
-      'DELETE FROM fields WHERE id = $1',
+      'UPDATE fields SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL',
       [fieldId]
     );
     return (result.rowCount ?? 0) > 0;
@@ -988,7 +990,8 @@ export class BookingAPI {
         working_days: row.working_days || [],
         working_timetable: row.working_timetable || null,
         client_info: row.client_info,
-        created_at: row.field_created_at || row.created_at
+        created_at: row.field_created_at || row.created_at,
+        deleted_at: row.field_deleted_at || null
       }
     }));
   }
@@ -1385,7 +1388,8 @@ export class BookingAPI {
         working_days: row.working_days || [],
         working_timetable: row.working_timetable || null,
         client_info: row.client_info,
-        created_at: row.field_created_at || row.created_at
+        created_at: row.field_created_at || row.created_at,
+        deleted_at: row.field_deleted_at || null
       },
       campaign_name: row.campaign_name || null,
     }));

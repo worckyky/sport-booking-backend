@@ -37,6 +37,7 @@ export interface Field {
   working_timetable: FieldWorkingTimetable | null;  // NEW
   client_info: string | null;
   created_at: string;
+  deleted_at: string | null;              // Soft delete timestamp
 }
 
 export interface CreateFieldRequest {
