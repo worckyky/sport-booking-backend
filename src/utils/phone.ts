@@ -25,9 +25,9 @@ export function normalizePhone(phone: string | null | undefined): string | null 
 
   // Валидация: должно быть 11 цифр и начинаться с 7
   if (digits.length !== 11 || !digits.startsWith('7')) {
-    // Возвращаем как есть если не удалось нормализовать
-    // (для иностранных номеров или нестандартных форматов)
-    return digits;
+    // Не удалось нормализовать — возвращаем null
+    // Это гарантирует единый формат для поиска по телефону
+    return null;
   }
 
   return digits;
