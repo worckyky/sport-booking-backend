@@ -110,9 +110,9 @@ export interface Campaign {
   socials_links: SocialLink[] | null;
   payment_methods: PaymentMethod[] | null;
   facilities: Facility[] | null;
-  sports: Sport[] | null;
   media: Media | null;
   booking_info: string | null;
+  timezone_id: string;
   status: CampaignStatus;
   created_at: string;
   updated_at: string;
@@ -133,6 +133,7 @@ export interface CampaignResponse {
   sports: Sport[] | null;
   media: Media | null;
   bookingInfo: string | null;
+  timezoneId: string;
   status: CampaignStatus;
   createdAt: string;
   updatedAt: string;
@@ -148,9 +149,9 @@ export interface CreateCampaignRequest {
   socialsLinks?: SocialLink[];
   paymentMethods?: PaymentMethod[];
   facilities?: Facility[];
-  sports?: Sport[];
   media?: Media;
   bookingInfo?: string;
+  timezoneId?: string;
 }
 
 export interface UpdateCampaignRequest {
@@ -163,7 +164,7 @@ export interface UpdateCampaignRequest {
   socialsLinks?: SocialLink[];
   paymentMethods?: PaymentMethod[];
   facilities?: Facility[];
-  sports?: Sport[];
   media?: Media;
   bookingInfo?: string;
+  timezoneId?: string;
 }

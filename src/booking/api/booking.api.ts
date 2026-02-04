@@ -818,30 +818,48 @@ export class BookingAPI {
   /**
    * Auto-complete: обновляет статус confirmed → completed для прошедших бронирований
    * Вызывается автоматически при запросе списка бронирований
+   * Использует таймзону площадки для корректного сравнения времени
    */
   private async autoCompleteBookings(): Promise<void> {
     await this.db.query(
       `UPDATE bookings b
        SET status = 'completed'
        FROM booking_slots s
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        WHERE b.slot_id = s.id
          AND b.status = 'confirmed'
-         AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.end_time < CURRENT_TIME))`
+         AND (
+           s.date < (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+           OR (
+             s.date = (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+             AND s.end_time < (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::time
+           )
+         )`
     );
   }
 
   /**
    * Auto-expire: обновляет статус pending → expired для просроченных заявок
    * (владелец не ответил до начала слота)
+   * Использует таймзону площадки для корректного сравнения времени
    */
   private async autoExpireBookings(): Promise<void> {
     await this.db.query(
       `UPDATE bookings b
        SET status = 'expired'
        FROM booking_slots s
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        WHERE b.slot_id = s.id
          AND b.status = 'pending'
-         AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time < CURRENT_TIME))`
+         AND (
+           s.date < (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+           OR (
+             s.date = (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+             AND s.start_time < (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::time
+           )
+         )`
     );
   }
 
@@ -1122,16 +1140,19 @@ export class BookingAPI {
   };
 
   async updateBookingStatus(bookingId: string, newStatus: BookingStatus): Promise<Booking | null> {
-    // Получаем текущее бронирование с данными слота
+    // Получаем текущее бронирование с данными слота и таймзоной площадки
     const bookingWithSlot = await this.db.query<{
       booking_status: BookingStatus;
       slot_date: string;
       start_time: string;
       end_time: string;
+      timezone_id: string;
     }>(
-      `SELECT b.status as booking_status, s.date as slot_date, s.start_time, s.end_time
+      `SELECT b.status as booking_status, s.date as slot_date, s.start_time, s.end_time, c.timezone_id
        FROM bookings b
        JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        WHERE b.id = $1`,
       [bookingId]
     );
@@ -1140,7 +1161,7 @@ export class BookingAPI {
       return null;
     }
 
-    const { booking_status: currentStatus, slot_date, start_time } = bookingWithSlot.rows[0];
+    const { booking_status: currentStatus, slot_date, start_time, timezone_id } = bookingWithSlot.rows[0];
 
     // Проверяем валидность перехода
     const allowedTransitions = BookingAPI.STATUS_TRANSITIONS[currentStatus];
@@ -1153,13 +1174,18 @@ export class BookingAPI {
     const timeRestriction = BookingAPI.TIME_RESTRICTED_TRANSITIONS[transitionKey];
 
     if (timeRestriction) {
-      // Нормализуем дату (PostgreSQL может вернуть Date объект)
-      const dateStr = typeof slot_date === 'object'
-        ? (slot_date as Date).toISOString().split('T')[0]
-        : slot_date;
-      const slotStartTime = new Date(`${dateStr}T${start_time}`);
-      const now = new Date();
-      const slotStarted = slotStartTime < now;
+      // Проверяем через SQL с использованием таймзоны площадки
+      const timeCheckResult = await this.db.query<{ slot_started: boolean }>(
+        `SELECT (
+          $1::date < (CURRENT_TIMESTAMP AT TIME ZONE $3)::date
+          OR (
+            $1::date = (CURRENT_TIMESTAMP AT TIME ZONE $3)::date
+            AND $2::time < (CURRENT_TIMESTAMP AT TIME ZONE $3)::time
+          )
+        ) as slot_started`,
+        [slot_date, start_time, timezone_id]
+      );
+      const slotStarted = timeCheckResult.rows[0]?.slot_started ?? false;
 
       if (timeRestriction === 'before_start' && slotStarted) {
         throw new Error(`Transition ${currentStatus} -> ${newStatus} is only allowed before slot starts`);
@@ -1179,15 +1205,24 @@ export class BookingAPI {
 
   async cancelBooking(bookingId: string, userId: string): Promise<boolean> {
     // Клиент может отменить только до начала слота
+    // Используем таймзону площадки для корректного сравнения времени
     const result = await this.db.query(
       `UPDATE bookings b
        SET status = 'cancelled_by_client'
        FROM booking_slots s
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        WHERE b.id = $1
          AND b.user_id = $2
          AND b.slot_id = s.id
          AND b.status IN ('pending', 'confirmed')
-         AND (s.date > CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time > CURRENT_TIME))
+         AND (
+           s.date > (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+           OR (
+             s.date = (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+             AND s.start_time > (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::time
+           )
+         )
        RETURNING b.id`,
       [bookingId, userId]
     );

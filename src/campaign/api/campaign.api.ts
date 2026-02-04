@@ -73,10 +73,11 @@ export class CampaignAPI {
           payment_methods,
           facilities,
           media,
+          timezone_id,
           created_at,
           updated_at
         )
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
         returning *
       `,
       [
@@ -92,6 +93,7 @@ export class CampaignAPI {
         campaignData.paymentMethods || requestData.payment_methods || null,
         campaignData.facilities ?? null,
         toJsonbValue(campaignData.media ?? null),
+        campaignData.timezoneId || requestData.timezone_id || 'Europe/Moscow',
         now,
         now
       ]
@@ -153,6 +155,12 @@ export class CampaignAPI {
 
     if (campaignData.facilities !== undefined) add('facilities', campaignData.facilities);
     if (campaignData.media !== undefined) add('media', toJsonbValue(campaignData.media));
+
+    if (campaignData.timezoneId !== undefined) {
+      add('timezone_id', campaignData.timezoneId);
+    } else if (requestData.timezone_id !== undefined) {
+      add('timezone_id', requestData.timezone_id);
+    }
 
     add('updated_at', new Date().toISOString());
 
@@ -344,6 +352,7 @@ export class CampaignAPI {
       sports: sports as any[], // Computed from fields
       media: campaign.media,
       bookingInfo: campaign.booking_info,
+      timezoneId: campaign.timezone_id,
       status: campaign.status,
       createdAt: campaign.created_at,
       updatedAt: campaign.updated_at
