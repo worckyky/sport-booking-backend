@@ -19,7 +19,6 @@ INSERT INTO campaign_info (
   socials_links,
   payment_methods,
   facilities,
-  sports,
   media,
   booking_info,
   status
@@ -35,7 +34,6 @@ INSERT INTO campaign_info (
   '[{"type": "VK", "url": "https://vk.com/arena_sport"}, {"type": "TELEGRAM", "url": "https://t.me/arena_sport"}]'::jsonb,
   ARRAY['MONEY', 'CARD', 'SBP']::payment_method_type[],
   ARRAY['PARKING', 'SHOWER', 'LOCKER_ROOM', 'WIFI', 'LIGHTING', 'CAFE', 'RENTAL', 'VIDEO_SURVEILLANCE']::facility_type[],
-  ARRAY['FOOTBALL', 'BASKETBALL', 'TENNIS']::sport_type[],
   '{"photos": ["https://images.unsplash.com/photo-1556817411-31ae72fa3ea0", "https://images.unsplash.com/photo-1575361204480-aadea25e6e68"]}'::jsonb,
   'Вход со стороны главного входа. При первом посещении обратитесь к администратору. Не забудьте спортивную форму!',
   'published'
@@ -54,7 +52,6 @@ INSERT INTO campaign_info (
   socials_links,
   payment_methods,
   facilities,
-  sports,
   media,
   booking_info,
   status
@@ -70,7 +67,6 @@ INSERT INTO campaign_info (
   '[{"type": "WHATS_APP", "url": "https://wa.me/74959876543"}]'::jsonb,
   ARRAY['MONEY', 'CARD']::payment_method_type[],
   ARRAY['PARKING', 'SHOWER', 'LOCKER_ROOM', 'CAFE', 'RENTAL']::facility_type[],
-  ARRAY['TENNIS']::sport_type[],
   '{"photos": ["https://images.unsplash.com/photo-1622279457486-62dcc4a431d6"]}'::jsonb,
   'Ракетки можно взять в аренду на ресепшене. Мячи предоставляются.',
   'published'
@@ -176,6 +172,7 @@ INSERT INTO fields (
   campaign_id,
   name,
   price_per_hour,
+  sport_types,
   working_timetable
 ) VALUES
 -- Arena fields
@@ -184,6 +181,7 @@ INSERT INTO fields (
   '550e8400-e29b-41d4-a716-446655440001',
   'Футбольное поле #1',
   2000.00,
+  ARRAY['FOOTBALL']::text[],
   NULL -- inherits from campaign
 ),
 (
@@ -191,6 +189,7 @@ INSERT INTO fields (
   '550e8400-e29b-41d4-a716-446655440001',
   'Футбольное поле #2',
   2000.00,
+  ARRAY['FOOTBALL']::text[],
   NULL
 ),
 (
@@ -198,6 +197,7 @@ INSERT INTO fields (
   '550e8400-e29b-41d4-a716-446655440001',
   'Баскетбольный корт',
   1500.00,
+  ARRAY['BASKETBALL']::text[],
   '{"monday": {"from": "10:00", "to": "22:00", "breaks": [{"from": "13:00", "to": "14:00", "reason": "Технический перерыв"}]}}'::jsonb
 ),
 (
@@ -205,6 +205,7 @@ INSERT INTO fields (
   '550e8400-e29b-41d4-a716-446655440001',
   'Теннисный корт #1',
   1000.00,
+  ARRAY['TENNIS']::text[],
   NULL
 ),
 -- Pobeda fields
@@ -213,6 +214,7 @@ INSERT INTO fields (
   '550e8400-e29b-41d4-a716-446655440002',
   'Корт #1 (крытый)',
   1500.00,
+  ARRAY['TENNIS']::text[],
   NULL
 ),
 (
@@ -220,6 +222,7 @@ INSERT INTO fields (
   '550e8400-e29b-41d4-a716-446655440002',
   'Корт #2 (открытый)',
   1200.00,
+  ARRAY['TENNIS']::text[],
   NULL
 );
 
