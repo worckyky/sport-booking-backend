@@ -190,6 +190,43 @@ router.delete(
   }
 );
 
+// GET /campaign/:id/clients - Получить клиентов кампании (только владелец)
+router.get(
+  '/:id/clients',
+  authMiddleware(db),
+  campaignRoleMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const campaignId = req.params.id;
+
+      if (!campaignId) {
+        res.status(400).json({ error: 'Campaign ID is required' });
+        return;
+      }
+
+      // Verify user owns this campaign
+      const campaign = await campaignAPI.getCampaignById(campaignId);
+      if (campaign.userId !== req.userId) {
+        res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+
+      const clients = await campaignAPI.getClients(campaignId);
+      res.json(clients);
+    } catch (error) {
+      if (error instanceof Error) {
+        if (error.message === 'Campaign not found') {
+          res.status(404).json({ error: error.message });
+        } else {
+          res.status(400).json({ error: error.message });
+        }
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
 // PUT /campaign/:id/status - Изменить статус кампании (только ADMIN)
 router.put(
   '/:id/status',

@@ -12,6 +12,19 @@ import { normalizeEnumArray, normalizeJsonArray, toJsonbValue } from '../../util
 export class CampaignAPI {
   constructor(private db: Pool) {}
 
+  private async getSportsByCampaignId(campaignId: string): Promise<string[]> {
+    const { rows } = await this.db.query<{ sport: string }>(
+      `
+        SELECT DISTINCT unnest(f.sport_types) as sport
+        FROM fields f
+        WHERE f.campaign_id = $1 AND f.status = 'active'
+        ORDER BY sport
+      `,
+      [campaignId]
+    );
+    return rows.map((r) => r.sport);
+  }
+
   async getCampaignById(campaignId: string): Promise<CampaignResponse> {
     const { rows } = await this.db.query<Campaign>(
       'select * from campaign_info where id = $1 limit 1',
@@ -22,12 +35,18 @@ export class CampaignAPI {
       throw new Error('Campaign not found');
     }
 
-    return this.mapCampaignToResponse(data);
+    const sports = await this.getSportsByCampaignId(campaignId);
+    return this.mapCampaignToResponse(data, sports);
   }
 
   async getAllCampaigns(): Promise<CampaignResponse[]> {
     const { rows } = await this.db.query<Campaign>('select * from campaign_info');
-    return rows.map((campaign) => this.mapCampaignToResponse(campaign));
+    const results: CampaignResponse[] = [];
+    for (const campaign of rows) {
+      const sports = await this.getSportsByCampaignId(campaign.id);
+      results.push(this.mapCampaignToResponse(campaign, sports));
+    }
+    return results;
   }
 
   async createCampaign(
@@ -53,12 +72,11 @@ export class CampaignAPI {
           socials_links,
           payment_methods,
           facilities,
-          sports,
           media,
           created_at,
           updated_at
         )
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
         returning *
       `,
       [
@@ -73,7 +91,6 @@ export class CampaignAPI {
         toJsonbValue(campaignData.socialsLinks || requestData.socials_links || null),
         campaignData.paymentMethods || requestData.payment_methods || null,
         campaignData.facilities ?? null,
-        campaignData.sports ?? null,
         toJsonbValue(campaignData.media ?? null),
         now,
         now
@@ -83,7 +100,8 @@ export class CampaignAPI {
     const created = insert.rows[0];
     if (!created) throw new Error('Failed to create campaign');
 
-    return this.mapCampaignToResponse(created);
+    // No fields yet, sports will be empty
+    return this.mapCampaignToResponse(created, []);
   }
 
   async updateCampaign(
@@ -134,7 +152,6 @@ export class CampaignAPI {
     }
 
     if (campaignData.facilities !== undefined) add('facilities', campaignData.facilities);
-    if (campaignData.sports !== undefined) add('sports', campaignData.sports);
     if (campaignData.media !== undefined) add('media', toJsonbValue(campaignData.media));
 
     add('updated_at', new Date().toISOString());
@@ -156,7 +173,8 @@ export class CampaignAPI {
     );
 
     if (updated.rowCount === 0) throw new Error('Campaign not found or not updated');
-    return this.mapCampaignToResponse(updated.rows[0]);
+    const sports = await this.getSportsByCampaignId(campaignId);
+    return this.mapCampaignToResponse(updated.rows[0], sports);
   }
 
   async deleteCampaign(campaignId: string, userId: string): Promise<void> {
@@ -188,7 +206,8 @@ export class CampaignAPI {
       throw new Error('Campaign not found');
     }
 
-    return this.mapCampaignToResponse(updated.rows[0]);
+    const sports = await this.getSportsByCampaignId(campaignId);
+    return this.mapCampaignToResponse(updated.rows[0], sports);
   }
 
   async getPublishedCampaigns(filters?: {
@@ -251,7 +270,12 @@ export class CampaignAPI {
       `;
 
       const { rows } = await this.db.query<Campaign>(query, values);
-      return rows.map((campaign) => this.mapCampaignToResponse(campaign));
+      const results: CampaignResponse[] = [];
+      for (const campaign of rows) {
+        const sports = await this.getSportsByCampaignId(campaign.id);
+        results.push(this.mapCampaignToResponse(campaign, sports));
+      }
+      return results;
     }
 
     // Simple query without date filter
@@ -296,10 +320,15 @@ export class CampaignAPI {
     `;
 
     const { rows } = await this.db.query<Campaign>(query, values);
-    return rows.map((campaign) => this.mapCampaignToResponse(campaign));
+    const results: CampaignResponse[] = [];
+    for (const campaign of rows) {
+      const sports = await this.getSportsByCampaignId(campaign.id);
+      results.push(this.mapCampaignToResponse(campaign, sports));
+    }
+    return results;
   }
 
-  private mapCampaignToResponse(campaign: Campaign): CampaignResponse {
+  private mapCampaignToResponse(campaign: Campaign, sports: string[]): CampaignResponse {
     return {
       id: campaign.id,
       userId: campaign.user_id,
@@ -312,12 +341,138 @@ export class CampaignAPI {
       socialsLinks: normalizeJsonArray(campaign.socials_links),
       paymentMethods: normalizeEnumArray(campaign.payment_methods),
       facilities: normalizeEnumArray(campaign.facilities),
-      sports: normalizeEnumArray(campaign.sports),
+      sports: sports as any[], // Computed from fields
       media: campaign.media,
       bookingInfo: campaign.booking_info,
       status: campaign.status,
       createdAt: campaign.created_at,
       updatedAt: campaign.updated_at
     };
+  }
+
+  async getClients(campaignId: string): Promise<{
+    id: string;
+    name: string | null;
+    email: string | null;
+    phone: string | null;
+    bookings_count: number;
+    last_booking_date: string | null;
+    first_booking_date: string | null;
+    total_spent: number;
+    is_registered: boolean;
+  }[]> {
+    // Registered users who booked
+    const registeredQuery = this.db.query<{
+      id: string;
+      name: string | null;
+      email: string | null;
+      phone: string | null;
+      bookings_count: string;
+      last_booking_date: string | null;
+      first_booking_date: string | null;
+      total_spent: string;
+    }>(
+      `
+        SELECT
+          u.id,
+          u.name,
+          u.email,
+          u.phone,
+          COUNT(DISTINCT b.id)::text as bookings_count,
+          MAX(b.created_at) as last_booking_date,
+          MIN(b.created_at) as first_booking_date,
+          COALESCE(SUM(f.price_per_hour), 0)::text as total_spent
+        FROM users u
+        INNER JOIN bookings b ON b.user_id = u.id
+        INNER JOIN booking_slots s ON s.id = b.slot_id
+        INNER JOIN fields f ON f.id = s.field_id
+        WHERE f.campaign_id = $1
+          AND b.status IN ('confirmed', 'completed')
+        GROUP BY u.id, u.name, u.email, u.phone
+      `,
+      [campaignId]
+    );
+
+    // Guest bookings (no user_id, identified by contact_phone)
+    const guestQuery = this.db.query<{
+      phone: string;
+      name: string | null;
+      bookings_count: string;
+      last_booking_date: string | null;
+      first_booking_date: string | null;
+      total_spent: string;
+    }>(
+      `
+        SELECT
+          b.contact_phone as phone,
+          MAX(b.contact_name) as name,
+          COUNT(DISTINCT b.id)::text as bookings_count,
+          MAX(b.created_at) as last_booking_date,
+          MIN(b.created_at) as first_booking_date,
+          COALESCE(SUM(f.price_per_hour), 0)::text as total_spent
+        FROM bookings b
+        INNER JOIN booking_slots s ON s.id = b.slot_id
+        INNER JOIN fields f ON f.id = s.field_id
+        WHERE f.campaign_id = $1
+          AND b.user_id IS NULL
+          AND b.contact_phone IS NOT NULL
+          AND b.status IN ('confirmed', 'completed')
+        GROUP BY b.contact_phone
+      `,
+      [campaignId]
+    );
+
+    const [registeredResult, guestResult] = await Promise.all([registeredQuery, guestQuery]);
+
+    const clients: {
+      id: string;
+      name: string | null;
+      email: string | null;
+      phone: string | null;
+      bookings_count: number;
+      last_booking_date: string | null;
+      first_booking_date: string | null;
+      total_spent: number;
+      is_registered: boolean;
+    }[] = [];
+
+    // Add registered users
+    for (const row of registeredResult.rows) {
+      clients.push({
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        phone: row.phone,
+        bookings_count: parseInt(row.bookings_count, 10),
+        last_booking_date: row.last_booking_date,
+        first_booking_date: row.first_booking_date,
+        total_spent: parseFloat(row.total_spent),
+        is_registered: true,
+      });
+    }
+
+    // Add guests (use phone as id with prefix)
+    for (const row of guestResult.rows) {
+      clients.push({
+        id: `guest_${row.phone}`,
+        name: row.name,
+        email: null,
+        phone: row.phone,
+        bookings_count: parseInt(row.bookings_count, 10),
+        last_booking_date: row.last_booking_date,
+        first_booking_date: row.first_booking_date,
+        total_spent: parseFloat(row.total_spent),
+        is_registered: false,
+      });
+    }
+
+    // Sort by last_booking_date desc
+    clients.sort((a, b) => {
+      if (!a.last_booking_date) return 1;
+      if (!b.last_booking_date) return -1;
+      return new Date(b.last_booking_date).getTime() - new Date(a.last_booking_date).getTime();
+    });
+
+    return clients;
   }
 }
