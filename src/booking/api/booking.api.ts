@@ -884,10 +884,12 @@ export class BookingAPI {
          s.field_id, s.date, s.start_time, s.end_time, s.is_blocked, s.block_reason, s.created_at as slot_created_at,
          f.id as field_id, f.campaign_id, f.name, f.sport_types, f.is_indoor, f.photos,
          f.price_per_hour, f.status as field_status, f.slot_duration, f.working_hours_from,
-         f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at
+         f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at,
+         c.timezone_id as campaign_timezone_id
        FROM bookings b
        JOIN booking_slots s ON b.slot_id = s.id
        JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        WHERE b.user_id = $1
        ORDER BY s.date DESC, s.start_time DESC`,
       [userId]
@@ -960,6 +962,7 @@ export class BookingAPI {
       contact_name: row.contact_name || null,
       contact_phone: row.contact_phone || null,
       created_at: row.booking_created_at,
+      campaign_timezone_id: row.campaign_timezone_id || 'Europe/Moscow',
       user: row.user_name !== undefined ? {
         name: row.user_name || null,
         phone: row.user_phone || null,
@@ -1206,6 +1209,33 @@ export class BookingAPI {
     return result.rows[0] || null;
   }
 
+  /**
+   * Массовое обновление статусов бронирований (только для ADMIN)
+   * Возвращает количество успешно обновлённых записей
+   */
+  async bulkUpdateBookingStatus(
+    bookingIds: string[],
+    newStatus: BookingStatus
+  ): Promise<{ updated: number; failed: string[] }> {
+    const updated: string[] = [];
+    const failed: string[] = [];
+
+    for (const bookingId of bookingIds) {
+      try {
+        const result = await this.updateBookingStatus(bookingId, newStatus);
+        if (result) {
+          updated.push(bookingId);
+        } else {
+          failed.push(bookingId);
+        }
+      } catch {
+        failed.push(bookingId);
+      }
+    }
+
+    return { updated: updated.length, failed };
+  }
+
   async cancelBooking(bookingId: string, userId: string): Promise<boolean> {
     // Клиент может отменить только до начала слота
     // Используем таймзону площадки для корректного сравнения времени
@@ -1250,10 +1280,12 @@ export class BookingAPI {
          s.field_id, s.date, s.start_time, s.end_time, s.is_blocked, s.block_reason, s.created_at as slot_created_at,
          f.id as field_id, f.campaign_id, f.name, f.sport_types, f.is_indoor, f.photos,
          f.price_per_hour, f.status as field_status, f.slot_duration, f.working_hours_from,
-         f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at
+         f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at,
+         c.timezone_id as campaign_timezone_id
        FROM bookings b
        JOIN booking_slots s ON b.slot_id = s.id
        JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        WHERE b.id = $1 AND b.user_id = $2`,
       [bookingId, userId]
     );
@@ -1324,6 +1356,7 @@ export class BookingAPI {
          f.price_per_hour, f.status as field_status, f.slot_duration, f.working_hours_from,
          f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at,
          c.name as campaign_name,
+         c.timezone_id as campaign_timezone_id,
          COALESCE(b.contact_name, u.name) as user_name,
          COALESCE(b.contact_phone, u.phone) as user_phone,
          u.email as user_email
@@ -1358,6 +1391,7 @@ export class BookingAPI {
       contact_name: row.contact_name || null,
       contact_phone: row.contact_phone || null,
       created_at: row.booking_created_at,
+      campaign_timezone_id: row.campaign_timezone_id || 'Europe/Moscow',
       user: row.user_name !== undefined ? {
         name: row.user_name || null,
         phone: row.user_phone || null,

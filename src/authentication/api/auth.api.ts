@@ -241,6 +241,43 @@ export class AuthAPI {
   }
 
   /**
+   * Получить пользователя по ID (только для ADMIN)
+   */
+  async getUserById(userId: string): Promise<{
+    id: string;
+    email: string;
+    name: string | null;
+    phone: string | null;
+    role: USER_ROLE;
+    email_verified: EMAIL_STATUS;
+    is_blocked: boolean;
+    created_at: string;
+  } | null> {
+    const result = await this.db.query<DbUser>(
+      `SELECT id, email, name, phone, role, email_verified, is_blocked, created_at
+       FROM users
+       WHERE id = $1`,
+      [userId]
+    );
+
+    if (result.rowCount === 0) {
+      return null;
+    }
+
+    const user = result.rows[0];
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      phone: user.phone,
+      role: user.role,
+      email_verified: user.email_verified ?? EMAIL_STATUS.NOT_VERIFIED,
+      is_blocked: user.is_blocked ?? false,
+      created_at: user.created_at
+    };
+  }
+
+  /**
    * Получить всех пользователей (только для ADMIN)
    */
   async getAllUsers(): Promise<Array<{

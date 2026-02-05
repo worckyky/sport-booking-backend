@@ -151,4 +151,5 @@ export interface BookingDetails extends Booking {
   slot: BookingSlot;
   field: Field;
   user?: BookingUser;
+  campaign_timezone_id?: string;  // IANA timezone ID (e.g., 'Europe/Moscow')
 }

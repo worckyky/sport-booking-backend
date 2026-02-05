@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { Pool } from 'pg';
 import { BookingAPI } from '../api/booking.api';
 import { authMiddleware, AuthRequest } from '../../authentication/middleware/auth.middleware';
+import { adminMiddleware } from '../../authentication/middleware/admin.middleware';
 import {
   fieldOwnerMiddleware,
   slotOwnerMiddleware,
@@ -433,6 +434,42 @@ export default function createBookingRoutes(db: Pool): Router {
       }
     }
   );
+
+  // PUT /booking/admin/bulk-status — массовое обновление статусов (только для ADMIN)
+  router.put('/admin/bulk-status', adminMiddleware(db), async (req: AuthRequest, res: Response) => {
+    try {
+      const { bookingIds, status } = req.body;
+
+      if (!bookingIds || !Array.isArray(bookingIds) || bookingIds.length === 0) {
+        return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'bookingIds array is required', 'bookingIds');
+      }
+
+      if (bookingIds.length > 100) {
+        return sendError(res, 400, ErrorCode.VALIDATION_ERROR, 'Maximum 100 bookings per request', 'bookingIds');
+      }
+
+      if (!status) {
+        return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'status is required', 'status');
+      }
+
+      const validStatuses = ['confirmed', 'rejected', 'cancelled_by_admin'];
+      if (!validStatuses.includes(status)) {
+        return sendError(res, 400, ErrorCode.VALIDATION_ERROR, `Invalid status for bulk update. Must be one of: ${validStatuses.join(', ')}`, 'status');
+      }
+
+      // Валидация UUID
+      for (const id of bookingIds) {
+        if (!isValidUUID(id)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, `Invalid booking ID format: ${id}`, 'bookingIds');
+        }
+      }
+
+      const result = await api.bulkUpdateBookingStatus(bookingIds, status);
+      res.json(result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
 
   // DELETE /booking/:id — отменить бронь (только владелец брони)
   router.delete('/:id', authMiddleware(db), async (req: AuthRequest, res: Response) => {

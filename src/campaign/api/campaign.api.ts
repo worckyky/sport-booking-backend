@@ -484,4 +484,104 @@ export class CampaignAPI {
 
     return clients;
   }
+
+  /**
+   * Получить клиента по ID (O(1) вместо загрузки всех клиентов)
+   */
+  async getClientById(campaignId: string, clientId: string): Promise<{
+    id: string;
+    name: string | null;
+    email: string | null;
+    phone: string | null;
+    bookings_count: number;
+    last_booking_date: string | null;
+    first_booking_date: string | null;
+    is_registered: boolean;
+  } | null> {
+    // Проверяем, гостевой ли это клиент (id начинается с "guest_")
+    if (clientId.startsWith('guest_')) {
+      const phone = clientId.replace('guest_', '');
+      const result = await this.db.query<{
+        phone: string;
+        name: string;
+        bookings_count: string;
+        last_booking_date: string;
+        first_booking_date: string;
+      }>(
+        `
+          SELECT
+            b.contact_phone as phone,
+            MAX(b.contact_name) as name,
+            COUNT(*)::text as bookings_count,
+            MAX(s.date)::text as last_booking_date,
+            MIN(s.date)::text as first_booking_date
+          FROM bookings b
+          JOIN booking_slots s ON b.slot_id = s.id
+          JOIN fields f ON s.field_id = f.id
+          WHERE f.campaign_id = $1
+            AND b.user_id IS NULL
+            AND b.contact_phone = $2
+          GROUP BY b.contact_phone
+        `,
+        [campaignId, phone]
+      );
+
+      if (result.rowCount === 0) return null;
+
+      const row = result.rows[0];
+      return {
+        id: clientId,
+        name: row.name,
+        email: null,
+        phone: row.phone,
+        bookings_count: parseInt(row.bookings_count, 10),
+        last_booking_date: row.last_booking_date,
+        first_booking_date: row.first_booking_date,
+        is_registered: false,
+      };
+    }
+
+    // Зарегистрированный пользователь
+    const result = await this.db.query<{
+      id: string;
+      name: string;
+      email: string;
+      phone: string;
+      bookings_count: string;
+      last_booking_date: string;
+      first_booking_date: string;
+    }>(
+      `
+        SELECT
+          u.id,
+          u.name,
+          u.email,
+          u.phone,
+          COUNT(b.id)::text as bookings_count,
+          MAX(s.date)::text as last_booking_date,
+          MIN(s.date)::text as first_booking_date
+        FROM users u
+        JOIN bookings b ON b.user_id = u.id
+        JOIN booking_slots s ON b.slot_id = s.id
+        JOIN fields f ON s.field_id = f.id
+        WHERE f.campaign_id = $1 AND u.id = $2
+        GROUP BY u.id
+      `,
+      [campaignId, clientId]
+    );
+
+    if (result.rowCount === 0) return null;
+
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      phone: row.phone,
+      bookings_count: parseInt(row.bookings_count, 10),
+      last_booking_date: row.last_booking_date,
+      first_booking_date: row.first_booking_date,
+      is_registered: true,
+    };
+  }
 }

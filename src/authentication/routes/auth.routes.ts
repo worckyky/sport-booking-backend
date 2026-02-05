@@ -61,12 +61,14 @@ export class AuthRoutes {
     };
 
     if (user.role === USER_ROLE.CAMPAIGN) {
-      const campaignRes = await this.db.query<{ id: string }>(
-        'select id from campaign_info where user_id = $1 limit 1',
+      const campaignRes = await this.db.query<{ id: string; timezone_id: string | null; name: string | null }>(
+        'select id, timezone_id, name from campaign_info where user_id = $1 limit 1',
         [userId]
       );
       if ((campaignRes.rowCount ?? 0) > 0) {
         profile.campaign_id = campaignRes.rows[0].id;
+        profile.campaign_timezone_id = campaignRes.rows[0].timezone_id ?? 'Europe/Moscow';
+        profile.campaign_name = campaignRes.rows[0].name ?? undefined;
       }
     }
 
@@ -330,6 +332,29 @@ export class AuthRoutes {
       try {
         const users = await this.authAPI.getAllUsers();
         res.json(users);
+      } catch (error) {
+        if (error instanceof Error) {
+          res.status(400).json({ error: error.message });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    // Get single user by ID (admin only)
+    this.router.get('/admin/users/:id', adminMiddleware(this.db), async (req: AuthReq, res: Response) => {
+      try {
+        const userId = req.params.id;
+        if (!userId) {
+          return res.status(400).json({ error: 'User ID is required' });
+        }
+
+        const user = await this.authAPI.getUserById(userId);
+        if (!user) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+
+        res.json(user);
       } catch (error) {
         if (error instanceof Error) {
           res.status(400).json({ error: error.message });

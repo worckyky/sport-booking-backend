@@ -41,6 +41,8 @@ export interface UserProfile {
   email_verified: EMAIL_STATUS;
   date_of_birth?: string;
   campaign_id?: string;
+  campaign_timezone_id?: string;  // IANA timezone ID (e.g., 'Europe/Moscow')
+  campaign_name?: string;
   created_at: string;
   updated_at: string;
 }

@@ -227,6 +227,50 @@ router.get(
   }
 );
 
+// GET /campaign/:id/clients/:clientId - Получить клиента по ID (O(1))
+router.get(
+  '/:id/clients/:clientId',
+  authMiddleware(db),
+  campaignRoleMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const campaignId = req.params.id;
+      const clientId = req.params.clientId;
+
+      if (!campaignId) {
+        res.status(400).json({ error: 'Campaign ID is required' });
+        return;
+      }
+
+      // Проверяем владельца
+      const campaign = await campaignAPI.getCampaignById(campaignId);
+      if (!campaign) {
+        res.status(404).json({ error: 'Campaign not found' });
+        return;
+      }
+
+      if (campaign.userId !== req.userId) {
+        res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+
+      const client = await campaignAPI.getClientById(campaignId, clientId);
+      if (!client) {
+        res.status(404).json({ error: 'Client not found' });
+        return;
+      }
+
+      res.json(client);
+    } catch (error) {
+      if (error instanceof Error) {
+        res.status(400).json({ error: error.message });
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
 // PUT /campaign/:id/status - Изменить статус кампании (только ADMIN)
 router.put(
   '/:id/status',

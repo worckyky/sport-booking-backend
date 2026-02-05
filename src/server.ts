@@ -99,6 +99,15 @@ async function start(): Promise<void> {
     });
   });
 
+  // Server time endpoint for client synchronization
+  app.get('/server-time', (req: Request, res: Response) => {
+    const now = Date.now();
+    res.json({
+      timestamp: new Date(now).toISOString(),
+      unixMs: now
+    });
+  });
+
   // Database query endpoint
   app.post('/db/query', async (req: Request<{}, any, DatabaseQueryRequest>, res: Response) => {
     try {
