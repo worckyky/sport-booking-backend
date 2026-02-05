@@ -17,7 +17,7 @@ async function seed() {
     console.log('🔐 Generated password hash for test users');
 
     // Read seed SQL file
-    const seedPath = path.join(__dirname, '../../migrations/seed.sql');
+    const seedPath = path.join(__dirname, '../../seeds/seed.sql');
     let seedSQL = fs.readFileSync(seedPath, 'utf8');
 
     // Replace placeholder hash with real bcrypt hash
