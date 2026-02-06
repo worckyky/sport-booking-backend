@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { Pool } from 'pg';
-import { BookingAPI } from '../api/booking.api';
+import { BookingAPI, ScheduleConflictError } from '../api/booking.api';
 import { authMiddleware, AuthRequest } from '../../authentication/middleware/auth.middleware';
 import { adminMiddleware } from '../../authentication/middleware/admin.middleware';
 import {
@@ -148,7 +148,15 @@ export default function createBookingRoutes(db: Pool): Router {
         }
         res.json(field);
       } catch (error) {
-        res.status(400).json({ error: (error as Error).message });
+        if (error instanceof ScheduleConflictError) {
+          res.status(409).json({
+            error: error.message,
+            code: error.code,
+            conflicts: error.conflicts,
+          });
+        } else {
+          res.status(400).json({ error: (error as Error).message });
+        }
       }
     }
   );

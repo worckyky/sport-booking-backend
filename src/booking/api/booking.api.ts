@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import {
   Field,
   CreateFieldRequest,
@@ -15,6 +15,31 @@ import {
 } from '../model/booking.model';
 import { toJsonbValue } from '../../utils/pg';
 import { normalizePhone } from '../../utils/phone';
+
+// Типы для классификации изменений
+type FieldChangeType = 'COSMETIC' | 'BREAK_CHANGE' | 'SCHEDULE_CHANGE';
+
+// Структурированная ошибка конфликта расписания
+export interface ScheduleConflict {
+  bookingId: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  clientName: string | null;
+  clientPhone: string | null;
+  status: string;
+}
+
+export class ScheduleConflictError extends Error {
+  code = 'SCHEDULE_CONFLICT' as const;
+  conflicts: ScheduleConflict[];
+
+  constructor(message: string, conflicts: ScheduleConflict[]) {
+    super(message);
+    this.name = 'ScheduleConflictError';
+    this.conflicts = conflicts;
+  }
+}
 
 export interface PaginationParams {
   page?: number;
@@ -43,6 +68,166 @@ interface WorkingTimetable {
 
 export class BookingAPI {
   constructor(private db: Pool) {}
+
+  // ==================== TRANSACTION HELPER ====================
+
+  private async withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // ==================== CHANGE CLASSIFICATION ====================
+
+  /**
+   * Определяет тип изменения поля: COSMETIC | BREAK_CHANGE | SCHEDULE_CHANGE
+   * Приоритет: SCHEDULE_CHANGE > BREAK_CHANGE > COSMETIC
+   */
+  private classifyFieldChanges(current: Field, data: UpdateFieldRequest): FieldChangeType {
+    // slot_duration изменился → SCHEDULE_CHANGE
+    if (data.slot_duration !== undefined && data.slot_duration !== current.slot_duration) {
+      return 'SCHEDULE_CHANGE';
+    }
+
+    // working_timetable изменился — нужно детально сравнить
+    if (data.working_timetable !== undefined) {
+      const oldTT = current.working_timetable || {};
+      const newTT = data.working_timetable || {};
+      const days: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
+      let onlyBreaksChanged = false;
+
+      for (const day of days) {
+        const oldDay = oldTT[day];
+        const newDay = newTT[day];
+
+        // День включён/выключен → SCHEDULE_CHANGE
+        const oldEnabled = oldDay !== null && oldDay !== undefined;
+        const newEnabled = newDay !== null && newDay !== undefined;
+        if (oldEnabled !== newEnabled) return 'SCHEDULE_CHANGE';
+
+        if (!oldEnabled || !newEnabled) continue;
+
+        // Часы работы изменились → SCHEDULE_CHANGE
+        if (oldDay!.from !== newDay!.from || oldDay!.to !== newDay!.to) {
+          return 'SCHEDULE_CHANGE';
+        }
+
+        // Перерывы изменились
+        const oldBreaks = JSON.stringify(oldDay!.breaks || []);
+        const newBreaks = JSON.stringify(newDay!.breaks || []);
+        if (oldBreaks !== newBreaks) {
+          onlyBreaksChanged = true;
+        }
+      }
+
+      if (onlyBreaksChanged) return 'BREAK_CHANGE';
+    }
+
+    return 'COSMETIC';
+  }
+
+  // ==================== SLOT MANAGEMENT ====================
+
+  /**
+   * Удаляет ВСЕ будущие свободные слоты (включая break-blocked).
+   * Они перегенерируются лениво при следующем запросе.
+   */
+  private async deleteAllFutureFreeSlots(fieldId: string, client?: PoolClient): Promise<number> {
+    const queryRunner = client || this.db;
+    const result = await queryRunner.query(
+      `DELETE FROM booking_slots
+       WHERE field_id = $1
+         AND date >= CURRENT_DATE
+         AND id NOT IN (
+           SELECT slot_id FROM bookings
+           WHERE status IN ('pending', 'confirmed')
+         )`,
+      [fieldId]
+    );
+    return result.rowCount || 0;
+  }
+
+  /**
+   * Синхронизирует блокировку слотов при изменении перерывов.
+   * Старые break-слоты разблокируются, новые — блокируются.
+   */
+  private async syncBreakBlocks(
+    fieldId: string,
+    oldTimetable: FieldWorkingTimetable | null,
+    newTimetable: FieldWorkingTimetable | null,
+    client?: PoolClient
+  ): Promise<void> {
+    const queryRunner = client || this.db;
+    const days: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    const dayNames: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+    const oldTT = oldTimetable || {};
+    const newTT = newTimetable || {};
+
+    for (const day of days) {
+      const oldDay = oldTT[day];
+      const newDay = newTT[day];
+
+      if (!oldDay && !newDay) continue;
+
+      const oldBreaks = oldDay?.breaks || [];
+      const newBreaks = newDay?.breaks || [];
+
+      const oldBreaksStr = JSON.stringify(oldBreaks);
+      const newBreaksStr = JSON.stringify(newBreaks);
+      if (oldBreaksStr === newBreaksStr) continue;
+
+      // Номер дня недели в JS (0=Sun, 1=Mon, ...)
+      const dayIndex = dayNames.indexOf(day);
+
+      // Разблокировать слоты в старых перерывах (которых нет в новых)
+      for (const oldBrk of oldBreaks) {
+        const stillExists = newBreaks.some(nb => nb.from === oldBrk.from && nb.to === oldBrk.to);
+        if (stillExists) continue;
+
+        await queryRunner.query(
+          `UPDATE booking_slots
+           SET is_blocked = false, block_reason = NULL
+           WHERE field_id = $1
+             AND date >= CURRENT_DATE
+             AND EXTRACT(DOW FROM date) = $2
+             AND start_time >= $3::time AND end_time <= $4::time
+             AND is_blocked = true AND block_reason = 'break'`,
+          [fieldId, dayIndex, oldBrk.from, oldBrk.to]
+        );
+      }
+
+      // Заблокировать слоты в новых перерывах (которых не было в старых)
+      for (const newBrk of newBreaks) {
+        const alreadyExisted = oldBreaks.some(ob => ob.from === newBrk.from && ob.to === newBrk.to);
+        if (alreadyExisted) continue;
+
+        await queryRunner.query(
+          `UPDATE booking_slots
+           SET is_blocked = true, block_reason = 'break'
+           WHERE field_id = $1
+             AND date >= CURRENT_DATE
+             AND EXTRACT(DOW FROM date) = $2
+             AND start_time >= $3::time AND end_time <= $4::time
+             AND is_blocked = false
+             AND id NOT IN (
+               SELECT slot_id FROM bookings WHERE status IN ('pending', 'confirmed')
+             )`,
+          [fieldId, dayIndex, newBrk.from, newBrk.to]
+        );
+      }
+    }
+  }
 
   // ==================== HELPERS ====================
 
@@ -93,7 +278,8 @@ export class BookingAPI {
 
   private validateFieldTimetableAgainstCampaign(
     fieldTimetable: FieldWorkingTimetable,
-    campaignTimetable: WorkingTimetable
+    campaignTimetable: WorkingTimetable,
+    slotDuration?: number
   ): void {
     const days: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
@@ -113,14 +299,14 @@ export class BookingAPI {
         throw new Error(`Время окончания работы поля (${fieldDay.to}) в ${day} не может быть позже закрытия площадки (${campaignDay.to})`);
       }
 
-      // Валидация перерывов
+      // Валидация перерывов (с проверкой grid alignment если slotDuration известен)
       if (fieldDay.breaks) {
-        this.validateBreaks(fieldDay);
+        this.validateBreaks(fieldDay, slotDuration);
       }
     }
   }
 
-  private validateBreaks(schedule: FieldDaySchedule): void {
+  private validateBreaks(schedule: FieldDaySchedule, slotDuration?: number): void {
     const breaks = schedule.breaks || [];
     const workStart = this.timeToMinutes(schedule.from);
     const workEnd = this.timeToMinutes(schedule.to);
@@ -134,6 +320,24 @@ export class BookingAPI {
       }
       if (brkStart < workStart || brkEnd > workEnd) {
         throw new Error(`Перерыв (${brk.from}-${brk.to}) должен быть в пределах рабочего времени (${schedule.from}-${schedule.to})`);
+      }
+
+      // Проверка grid alignment: перерыв должен совпадать с границами слотов
+      if (slotDuration && slotDuration > 0) {
+        const startOffset = (brkStart - workStart) % slotDuration;
+        const endOffset = (brkEnd - workStart) % slotDuration;
+
+        if (startOffset !== 0 || endOffset !== 0) {
+          const nearestStart = startOffset !== 0
+            ? this.minutesToTime(brkStart - startOffset)
+            : brk.from;
+          const nearestEnd = endOffset !== 0
+            ? this.minutesToTime(brkEnd + (slotDuration - endOffset))
+            : brk.to;
+          throw new Error(
+            `Перерыв ${brk.from}-${brk.to} не совпадает с сеткой слотов (шаг ${slotDuration} мин от ${schedule.from}). Ближайшие допустимые: ${nearestStart}-${nearestEnd}`
+          );
+        }
       }
     }
 
@@ -188,7 +392,7 @@ export class BookingAPI {
 
   async getFieldsByCampaign(campaignId: string): Promise<Field[]> {
     const result = await this.db.query<Field>(
-      'SELECT * FROM fields WHERE campaign_id = $1 AND deleted_at IS NULL ORDER BY created_at',
+      'SELECT * FROM fields WHERE campaign_id = $1 AND deleted_at IS NULL ORDER BY created_at, id',
       [campaignId]
     );
     return result.rows;
@@ -206,9 +410,9 @@ export class BookingAPI {
     // Валидация: время работы поля не может выходить за время работы площадки
     const campaignTimetable = await this.getCampaignWorkingTimetable(data.campaign_id);
     if (campaignTimetable) {
-      // Валидация нового формата working_timetable
+      // Валидация нового формата working_timetable (с проверкой grid alignment)
       if (data.working_timetable) {
-        this.validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable);
+        this.validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable, data.slot_duration || 60);
       }
       // Валидация legacy формата
       this.validateFieldWorkingHours(data.working_hours_from, data.working_hours_to, campaignTimetable);
@@ -440,116 +644,233 @@ export class BookingAPI {
   }
 
   async updateField(fieldId: string, data: UpdateFieldRequest): Promise<Field | null> {
-    // Валидация: время работы поля не может выходить за время работы площадки
-    const needsValidation = data.working_hours_from !== undefined ||
-                            data.working_hours_to !== undefined ||
-                            data.working_timetable !== undefined;
-
     const currentField = await this.getFieldById(fieldId);
     if (!currentField) {
       return null;
     }
 
+    // 1. Валидация расписания против площадки
+    const needsValidation = data.working_hours_from !== undefined ||
+                            data.working_hours_to !== undefined ||
+                            data.working_timetable !== undefined;
+
     if (needsValidation) {
       const campaignTimetable = await this.getCampaignWorkingTimetable(currentField.campaign_id);
       if (campaignTimetable) {
-        // Валидация нового формата working_timetable
         if (data.working_timetable !== undefined && data.working_timetable !== null) {
-          this.validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable);
+          const effectiveSlotDuration = data.slot_duration || currentField.slot_duration || 60;
+          this.validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable, effectiveSlotDuration);
         }
-        // Валидация legacy формата
         const newFrom = data.working_hours_from !== undefined ? data.working_hours_from : currentField.working_hours_from;
         const newTo = data.working_hours_to !== undefined ? data.working_hours_to : currentField.working_hours_to;
         this.validateFieldWorkingHours(newFrom, newTo, campaignTimetable);
       }
+    }
 
-      // Проверяем конфликтующие брони при изменении working_timetable
+    // 2. Логика паузы поля
+    let pendingToCancel: string[] = [];
+
+    if (data.status === 'disabled' && currentField.status === 'active') {
+      const bookings = await this.getActiveBookingsForField(fieldId);
+      const confirmed = bookings.filter(b => b.status === 'confirmed');
+
+      if (confirmed.length > 0) {
+        throw new ScheduleConflictError(
+          'Невозможно поставить на паузу: есть подтверждённые бронирования',
+          confirmed.map(b => ({
+            bookingId: b.id,
+            date: b.date,
+            startTime: b.startTime,
+            endTime: b.endTime,
+            clientName: b.clientName,
+            clientPhone: b.clientPhone,
+            status: b.status,
+          }))
+        );
+      }
+
+      pendingToCancel = bookings.filter(b => b.status === 'pending').map(b => b.id);
+    }
+
+    // 3. Классификация типа изменения
+    const changeType = this.classifyFieldChanges(currentField, data);
+
+    // 4. Проверка конфликтов в зависимости от типа изменения
+    if (changeType === 'SCHEDULE_CHANGE') {
+      // При изменении slot_duration — проверяем ВСЕ будущие брони
+      // При изменении from/to/days — проверяем конфликты с новым расписанием
+      const activeBookings = await this.getActiveBookingsForField(fieldId);
+
+      if (data.slot_duration !== undefined && data.slot_duration !== currentField.slot_duration) {
+        // Смена длительности — блок при любых будущих бронях
+        if (activeBookings.length > 0) {
+          throw new ScheduleConflictError(
+            'Невозможно изменить длительность слотов: есть активные бронирования',
+            activeBookings.map(b => ({
+              bookingId: b.id,
+              date: b.date,
+              startTime: b.startTime,
+              endTime: b.endTime,
+              clientName: b.clientName,
+              clientPhone: b.clientPhone,
+              status: b.status,
+            }))
+          );
+        }
+      }
+
+      // Проверяем конфликты с новым расписанием (дни/часы)
       if (data.working_timetable !== undefined && data.working_timetable !== null) {
         const conflicts = await this.getConflictingBookingsForScheduleChange(fieldId, data.working_timetable);
         if (conflicts.length > 0) {
-          const conflictDetails = conflicts.map(c =>
-            `${c.date} ${c.startTime}-${c.endTime} (${c.clientName || 'клиент'})`
-          ).join(', ');
-          throw new Error(
-            `Невозможно изменить расписание: есть активные брони, которые не вписываются в новое время. ` +
-            `Сначала отмените эти брони: ${conflictDetails}`
+          // Обогащаем данными о телефоне и статусе
+          const enriched = await this.enrichConflictsWithDetails(conflicts, fieldId);
+          throw new ScheduleConflictError(
+            'Невозможно изменить расписание: есть бронирования, которые не вписываются',
+            enriched
           );
         }
       }
     }
 
+    if (changeType === 'BREAK_CHANGE') {
+      // Проверяем только конфликты с новыми перерывами
+      if (data.working_timetable !== undefined && data.working_timetable !== null) {
+        const conflicts = await this.getConflictingBookingsForScheduleChange(fieldId, data.working_timetable);
+        if (conflicts.length > 0) {
+          const enriched = await this.enrichConflictsWithDetails(conflicts, fieldId);
+          throw new ScheduleConflictError(
+            'Невозможно изменить перерывы: есть бронирования в новом перерыве',
+            enriched
+          );
+        }
+      }
+    }
+
+    // 4. Формирование UPDATE запроса
     const sets: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
 
-    if (data.name !== undefined) {
-      sets.push(`name = $${idx++}`);
-      values.push(data.name);
-    }
-    if (data.sport_types !== undefined) {
-      sets.push(`sport_types = $${idx++}`);
-      values.push(data.sport_types);
-    }
-    if (data.is_indoor !== undefined) {
-      sets.push(`is_indoor = $${idx++}`);
-      values.push(data.is_indoor);
-    }
-    if (data.photos !== undefined) {
-      sets.push(`photos = $${idx++}`);
-      values.push(data.photos);
-    }
-    if (data.price_per_hour !== undefined) {
-      sets.push(`price_per_hour = $${idx++}`);
-      values.push(data.price_per_hour);
-    }
-    if (data.status !== undefined) {
-      sets.push(`status = $${idx++}`);
-      values.push(data.status);
-    }
-    if (data.slot_duration !== undefined) {
-      sets.push(`slot_duration = $${idx++}`);
-      values.push(data.slot_duration);
-    }
-    if (data.working_hours_from !== undefined) {
-      sets.push(`working_hours_from = $${idx++}`);
-      values.push(data.working_hours_from);
-    }
-    if (data.working_hours_to !== undefined) {
-      sets.push(`working_hours_to = $${idx++}`);
-      values.push(data.working_hours_to);
-    }
-    if (data.working_days !== undefined) {
-      sets.push(`working_days = $${idx++}`);
-      values.push(data.working_days);
-    }
-    if (data.working_timetable !== undefined) {
-      sets.push(`working_timetable = $${idx++}`);
-      values.push(toJsonbValue(data.working_timetable));
-    }
-    if (data.client_info !== undefined) {
-      sets.push(`client_info = $${idx++}`);
-      values.push(data.client_info);
-    }
+    if (data.name !== undefined) { sets.push(`name = $${idx++}`); values.push(data.name); }
+    if (data.sport_types !== undefined) { sets.push(`sport_types = $${idx++}`); values.push(data.sport_types); }
+    if (data.is_indoor !== undefined) { sets.push(`is_indoor = $${idx++}`); values.push(data.is_indoor); }
+    if (data.photos !== undefined) { sets.push(`photos = $${idx++}`); values.push(data.photos); }
+    if (data.price_per_hour !== undefined) { sets.push(`price_per_hour = $${idx++}`); values.push(data.price_per_hour); }
+    if (data.status !== undefined) { sets.push(`status = $${idx++}`); values.push(data.status); }
+    if (data.slot_duration !== undefined) { sets.push(`slot_duration = $${idx++}`); values.push(data.slot_duration); }
+    if (data.working_hours_from !== undefined) { sets.push(`working_hours_from = $${idx++}`); values.push(data.working_hours_from); }
+    if (data.working_hours_to !== undefined) { sets.push(`working_hours_to = $${idx++}`); values.push(data.working_hours_to); }
+    if (data.working_days !== undefined) { sets.push(`working_days = $${idx++}`); values.push(data.working_days); }
+    if (data.working_timetable !== undefined) { sets.push(`working_timetable = $${idx++}`); values.push(toJsonbValue(data.working_timetable)); }
+    if (data.client_info !== undefined) { sets.push(`client_info = $${idx++}`); values.push(data.client_info); }
 
     if (sets.length === 0) return this.getFieldById(fieldId);
 
-    values.push(fieldId);
-    const result = await this.db.query<Field>(
-      `UPDATE fields SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`,
-      values
-    );
-
-    const updatedField = result.rows[0] || null;
-
-    // Удаляем свободные слоты, которые не вписываются в новое расписание
-    if (updatedField && data.working_timetable !== undefined && data.working_timetable !== null) {
-      const deletedCount = await this.deleteOrphanedSlots(fieldId, data.working_timetable);
-      if (deletedCount > 0) {
-        console.log(`Deleted ${deletedCount} orphaned slots for field ${fieldId}`);
+    // 6. Выполнение в зависимости от типа изменения
+    if (changeType === 'COSMETIC') {
+      if (pendingToCancel.length > 0) {
+        // Пауза поля — авто-отмена pending + UPDATE в транзакции
+        return this.withTransaction(async (client) => {
+          await client.query(
+            `UPDATE bookings SET status = 'cancelled_by_facility' WHERE id = ANY($1)`,
+            [pendingToCancel]
+          );
+          values.push(fieldId);
+          const result = await client.query<Field>(
+            `UPDATE fields SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`,
+            values
+          );
+          return result.rows[0] || null;
+        });
       }
+
+      // Простой UPDATE без слотовой логики
+      values.push(fieldId);
+      const result = await this.db.query<Field>(
+        `UPDATE fields SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`,
+        values
+      );
+      return result.rows[0] || null;
     }
 
-    return updatedField;
+    if (changeType === 'SCHEDULE_CHANGE') {
+      // UPDATE + удаление ВСЕХ будущих свободных слотов (в транзакции)
+      return this.withTransaction(async (client) => {
+        values.push(fieldId);
+        const result = await client.query<Field>(
+          `UPDATE fields SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`,
+          values
+        );
+        const updatedField = result.rows[0] || null;
+
+        if (updatedField) {
+          await this.deleteAllFutureFreeSlots(fieldId, client);
+        }
+
+        return updatedField;
+      });
+    }
+
+    // BREAK_CHANGE — UPDATE + sync break blocks (в транзакции)
+    return this.withTransaction(async (client) => {
+      values.push(fieldId);
+      const result = await client.query<Field>(
+        `UPDATE fields SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`,
+        values
+      );
+      const updatedField = result.rows[0] || null;
+
+      if (updatedField) {
+        await this.syncBreakBlocks(
+          fieldId,
+          currentField.working_timetable,
+          data.working_timetable || null,
+          client
+        );
+      }
+
+      return updatedField;
+    });
+  }
+
+  /**
+   * Обогащает конфликты данными о телефоне и статусе
+   */
+  private async enrichConflictsWithDetails(
+    conflicts: Array<{ bookingId: string; date: string; startTime: string; endTime: string; clientName: string | null }>,
+    fieldId: string
+  ): Promise<ScheduleConflict[]> {
+    const bookingIds = conflicts.map(c => c.bookingId);
+    if (bookingIds.length === 0) return [];
+
+    const result = await this.db.query<{
+      id: string;
+      status: string;
+      contact_phone: string | null;
+      user_phone: string | null;
+    }>(
+      `SELECT b.id, b.status, b.contact_phone, u.phone as user_phone
+       FROM bookings b
+       LEFT JOIN users u ON b.user_id = u.id
+       WHERE b.id = ANY($1)`,
+      [bookingIds]
+    );
+
+    const detailsMap = new Map(result.rows.map(r => [r.id, r]));
+
+    return conflicts.map(c => {
+      const details = detailsMap.get(c.bookingId);
+      return {
+        bookingId: c.bookingId,
+        date: c.date,
+        startTime: c.startTime,
+        endTime: c.endTime,
+        clientName: c.clientName,
+        clientPhone: details?.contact_phone || details?.user_phone || null,
+        status: details?.status || 'unknown',
+      };
+    });
   }
 
   async deleteField(fieldId: string): Promise<boolean> {
@@ -639,20 +960,20 @@ export class BookingAPI {
       return [];
     }
 
-    // Batch INSERT
+    // Batch INSERT с is_blocked и block_reason
     const placeholders: string[] = [];
     const values: (string | boolean | null)[] = [];
 
     slots.forEach((slot, i) => {
-      const offset = i * 4;
+      const offset = i * 6;
       placeholders.push(
-        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4})`
+        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6})`
       );
-      values.push(fieldId, date, slot.start_time, slot.end_time);
+      values.push(fieldId, date, slot.start_time, slot.end_time, slot.is_blocked, slot.block_reason);
     });
 
     await this.db.query(
-      `INSERT INTO booking_slots (field_id, date, start_time, end_time)
+      `INSERT INTO booking_slots (field_id, date, start_time, end_time, is_blocked, block_reason)
        VALUES ${placeholders.join(', ')}
        ON CONFLICT (field_id, date, start_time) DO NOTHING`,
       values
@@ -670,11 +991,16 @@ export class BookingAPI {
     return this.mapSlotsWithBookings(newSlots.rows);
   }
 
+  /**
+   * Генерация слотов по фиксированной сетке.
+   * Слоты всегда идут от `from` с шагом `slotDuration`.
+   * Перерывы НЕ сдвигают сетку — слоты в перерыве помечаются как заблокированные.
+   */
   private generateSlotsFromSchedule(
     schedule: FieldDaySchedule,
     slotDuration: number
-  ): Array<{ start_time: string; end_time: string }> {
-    const slots: Array<{ start_time: string; end_time: string }> = [];
+  ): Array<{ start_time: string; end_time: string; is_blocked: boolean; block_reason: string | null }> {
+    const slots: Array<{ start_time: string; end_time: string; is_blocked: boolean; block_reason: string | null }> = [];
 
     const startMinutes = this.timeToMinutes(schedule.from);
     const endMinutes = this.timeToMinutes(schedule.to);
@@ -682,40 +1008,26 @@ export class BookingAPI {
       .map(b => ({ start: this.timeToMinutes(b.from), end: this.timeToMinutes(b.to) }))
       .sort((a, b) => a.start - b.start);
 
-    let current = startMinutes;
-
-    while (current + slotDuration <= endMinutes) {
-      // Проверяем, находимся ли мы внутри перерыва
-      const activeBreak = sortedBreaks.find(b => current >= b.start && current < b.end);
-      if (activeBreak) {
-        // Перепрыгиваем на конец перерыва
-        current = activeBreak.end;
-        continue;
-      }
-
+    // Фиксированная сетка: ровный шаг от начала, без прыжков
+    for (let current = startMinutes; current + slotDuration <= endMinutes; current += slotDuration) {
       const slotEnd = current + slotDuration;
 
-      // Проверяем, пересекается ли слот с перерывом
-      const overlappingBreak = sortedBreaks.find(b => current < b.end && slotEnd > b.start);
-      if (overlappingBreak) {
-        // Слот заходит в перерыв - перепрыгиваем на конец перерыва
-        current = overlappingBreak.end;
-        continue;
-      }
+      // Проверяем пересечение с любым перерывом
+      const overlapsBreak = sortedBreaks.some(b => current < b.end && slotEnd > b.start);
 
       slots.push({
         start_time: this.minutesToTime(current),
-        end_time: this.minutesToTime(slotEnd)
+        end_time: this.minutesToTime(slotEnd),
+        is_blocked: overlapsBreak,
+        block_reason: overlapsBreak ? 'break' : null,
       });
-
-      current += slotDuration;
     }
 
     return slots;
   }
 
   // DEPRECATED: legacy метод для обратной совместимости
-  private generateSlots(field: Field): Array<{ start_time: string; end_time: string }> {
+  private generateSlots(field: Field): Array<{ start_time: string; end_time: string; is_blocked: boolean; block_reason: string | null }> {
     if (!field.working_hours_from || !field.working_hours_to) {
       return [];
     }
@@ -1365,7 +1677,7 @@ export class BookingAPI {
        JOIN fields f ON s.field_id = f.id
        JOIN campaign_info c ON f.campaign_id = c.id
        LEFT JOIN users u ON b.user_id = u.id
-       ORDER BY b.created_at DESC
+       ORDER BY b.created_at DESC, b.id DESC
        LIMIT $1 OFFSET $2`,
       [limit, offset]
     );
