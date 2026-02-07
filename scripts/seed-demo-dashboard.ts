@@ -439,13 +439,27 @@ async function main() {
         const endMinutes = hour * 60 + field.duration;
         const endTime = `${pad2(Math.floor(endMinutes / 60))}:${pad2(endMinutes % 60)}`;
 
-        // Status depends on date
+        // Status depends on date (compare dates only, not timestamps)
         let status: string;
-        if (bookingDate > now) {
+        const bookingDateStr = dateToString(bookingDate);
+        const todayStr = dateToString(now);
+        if (bookingDateStr > todayStr) {
+          // Future dates: pending or confirmed
           status = Math.random() < 0.75 ? 'confirmed' : 'pending';
+        } else if (bookingDateStr === todayStr) {
+          // Today: future slots get confirmed/pending, past slots get weighted status
+          const nowMinutes = now.getHours() * 60 + now.getMinutes();
+          if (endMinutes > nowMinutes) {
+            status = Math.random() < 0.75 ? 'confirmed' : 'pending';
+          } else {
+            status = getWeightedStatus();
+            if (['pending', 'confirmed'].includes(status)) {
+              status = 'completed';
+            }
+          }
         } else {
+          // Past dates
           status = getWeightedStatus();
-          // Past bookings can't be pending/confirmed — force to completed
           if (['pending', 'confirmed'].includes(status)) {
             status = 'completed';
           }

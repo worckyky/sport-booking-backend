@@ -587,6 +587,7 @@ export class BookingAPI {
       `SELECT s.id, s.date, s.start_time, s.end_time
        FROM booking_slots s
        LEFT JOIN bookings b ON s.id = b.slot_id
+         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
        WHERE s.field_id = $1
          AND s.date >= CURRENT_DATE
          AND b.id IS NULL
@@ -928,19 +929,18 @@ export class BookingAPI {
               COALESCE(b.contact_phone, u.phone) as user_phone
        FROM booking_slots s
        LEFT JOIN bookings b ON s.id = b.slot_id
+         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
        LEFT JOIN users u ON b.user_id = u.id
        WHERE s.field_id = $1 AND s.date = $2
        ORDER BY s.start_time`,
       [fieldId, date]
     );
 
-    if (existingSlots.rows.length > 0) {
-      return this.mapSlotsWithBookings(existingSlots.rows);
-    }
-
-    // Для прошлых дат не генерируем новые слоты
+    // Для прошлых дат — возвращаем только существующие (история)
     if (isPastDate) {
-      return [];
+      return existingSlots.rows.length > 0
+        ? this.mapSlotsWithBookings(existingSlots.rows)
+        : [];
     }
 
     // Получаем расписание кампании для fallback
@@ -950,17 +950,22 @@ export class BookingAPI {
     const daySchedule = this.getDaySchedule(field, requestedDate, campaignTimetable);
 
     if (!daySchedule) {
-      return []; // выходной день
+      // Выходной — возвращаем существующие (если seed создал)
+      return existingSlots.rows.length > 0
+        ? this.mapSlotsWithBookings(existingSlots.rows)
+        : [];
     }
 
-    // Lazy генерация слотов с учетом расписания дня и перерывов
+    // Генерируем полный набор слотов по расписанию
     const slots = this.generateSlotsFromSchedule(daySchedule, field.slot_duration || 60);
 
     if (slots.length === 0) {
-      return [];
+      return existingSlots.rows.length > 0
+        ? this.mapSlotsWithBookings(existingSlots.rows)
+        : [];
     }
 
-    // Batch INSERT с is_blocked и block_reason
+    // INSERT missing slots (ON CONFLICT DO NOTHING — не трогаем существующие)
     const placeholders: string[] = [];
     const values: (string | boolean | null)[] = [];
 
@@ -979,16 +984,21 @@ export class BookingAPI {
       values
     );
 
-    // Возвращаем созданные слоты
-    const newSlots = await this.db.query(
-      `SELECT s.*, NULL as booking_id, NULL as booking_user_id, NULL as booking_status
+    // Возвращаем полный набор слотов (старые + новые)
+    const allSlots = await this.db.query(
+      `SELECT s.*, b.id as booking_id, b.user_id as booking_user_id, b.status as booking_status,
+              COALESCE(b.contact_name, u.name) as user_name,
+              COALESCE(b.contact_phone, u.phone) as user_phone
        FROM booking_slots s
+       LEFT JOIN bookings b ON s.id = b.slot_id
+         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+       LEFT JOIN users u ON b.user_id = u.id
        WHERE s.field_id = $1 AND s.date = $2
        ORDER BY s.start_time`,
       [fieldId, date]
     );
 
-    return this.mapSlotsWithBookings(newSlots.rows);
+    return this.mapSlotsWithBookings(allSlots.rows);
   }
 
   /**
@@ -1339,7 +1349,8 @@ export class BookingAPI {
     }
 
     const existing = await this.db.query(
-      'SELECT id FROM bookings WHERE slot_id = $1',
+      `SELECT id FROM bookings WHERE slot_id = $1
+       AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
       [slotId]
     );
 
@@ -1400,7 +1411,8 @@ export class BookingAPI {
     }
 
     const existing = await this.db.query(
-      'SELECT id FROM bookings WHERE slot_id = $1',
+      `SELECT id FROM bookings WHERE slot_id = $1
+       AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
       [slotId]
     );
 
@@ -1607,6 +1619,201 @@ export class BookingAPI {
     }
 
     return this.mapBookingDetails(result.rows)[0];
+  }
+
+  // ==================== RESCHEDULE ====================
+
+  async rescheduleBooking(
+    bookingId: string,
+    newSlotId: string,
+    rescheduledBy: string,
+    reason?: string
+  ): Promise<Booking | null> {
+    // 1. Загружаем текущую бронь с данными слота, поля и таймзоной
+    const bookingQuery = await this.db.query<{
+      booking_id: string;
+      booking_status: string;
+      old_slot_id: string;
+      slot_date: string;
+      start_time: string;
+      old_field_name: string;
+      old_campaign_id: string;
+      timezone_id: string;
+    }>(
+      `SELECT b.id as booking_id, b.status as booking_status, b.slot_id as old_slot_id,
+              s.date as slot_date, s.start_time,
+              f.name as old_field_name, f.campaign_id as old_campaign_id,
+              c.timezone_id
+       FROM bookings b
+       JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
+       WHERE b.id = $1`,
+      [bookingId]
+    );
+
+    if (bookingQuery.rows.length === 0) {
+      return null;
+    }
+
+    const booking = bookingQuery.rows[0];
+
+    // 2. Проверяем статус — только pending или confirmed
+    if (!['pending', 'confirmed'].includes(booking.booking_status)) {
+      throw new Error(`Cannot reschedule booking with status "${booking.booking_status}"`);
+    }
+
+    // 3. Проверяем что текущий слот не начался (timezone-aware)
+    const timeCheck = await this.db.query<{ slot_started: boolean }>(
+      `SELECT (
+        $1::date < (CURRENT_TIMESTAMP AT TIME ZONE $3)::date
+        OR (
+          $1::date = (CURRENT_TIMESTAMP AT TIME ZONE $3)::date
+          AND $2::time < (CURRENT_TIMESTAMP AT TIME ZONE $3)::time
+        )
+      ) as slot_started`,
+      [booking.slot_date, booking.start_time, booking.timezone_id]
+    );
+
+    if (timeCheck.rows[0]?.slot_started) {
+      throw new Error('Cannot reschedule past bookings');
+    }
+
+    // 4. Загружаем новый слот с данными поля
+    const newSlotQuery = await this.db.query<{
+      slot_id: string;
+      slot_date: string;
+      start_time: string;
+      is_blocked: boolean;
+      block_reason: string | null;
+      field_name: string;
+      field_price: number;
+      sport_types: string[];
+      new_campaign_id: string;
+    }>(
+      `SELECT s.id as slot_id, s.date as slot_date, s.start_time, s.is_blocked, s.block_reason,
+              f.name as field_name, f.price_per_hour as field_price, f.sport_types,
+              f.campaign_id as new_campaign_id
+       FROM booking_slots s
+       JOIN fields f ON s.field_id = f.id
+       WHERE s.id = $1`,
+      [newSlotId]
+    );
+
+    if (newSlotQuery.rows.length === 0) {
+      throw new Error('New slot not found');
+    }
+
+    const newSlot = newSlotQuery.rows[0];
+
+    // 5. Проверяем та же площадка
+    if (newSlot.new_campaign_id !== booking.old_campaign_id) {
+      throw new Error('Cannot reschedule to slot from different campaign');
+    }
+
+    // 6. Проверяем не заблокирован
+    if (newSlot.is_blocked) {
+      throw new Error(`New slot is blocked${newSlot.block_reason ? ': ' + newSlot.block_reason : ''}`);
+    }
+
+    // 7. Проверяем новый слот в будущем
+    const newTimeCheck = await this.db.query<{ slot_started: boolean }>(
+      `SELECT (
+        $1::date < (CURRENT_TIMESTAMP AT TIME ZONE $3)::date
+        OR (
+          $1::date = (CURRENT_TIMESTAMP AT TIME ZONE $3)::date
+          AND $2::time < (CURRENT_TIMESTAMP AT TIME ZONE $3)::time
+        )
+      ) as slot_started`,
+      [newSlot.slot_date, newSlot.start_time, booking.timezone_id]
+    );
+
+    if (newTimeCheck.rows[0]?.slot_started) {
+      throw new Error('Cannot reschedule to past slot');
+    }
+
+    // 8. Проверяем что новый слот свободен (нет активной брони)
+    const existingBooking = await this.db.query(
+      `SELECT id FROM bookings
+       WHERE slot_id = $1
+       AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
+      [newSlotId]
+    );
+
+    if (existingBooking.rows.length > 0) {
+      throw new Error('New slot is already booked');
+    }
+
+    // 9. Транзакция: запись истории + обновление брони
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Запись в историю
+      await client.query(
+        `INSERT INTO booking_reschedules (booking_id, old_slot_id, new_slot_id, old_field_name, new_field_name, rescheduled_by, reason)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [bookingId, booking.old_slot_id, newSlotId, booking.old_field_name, newSlot.field_name, rescheduledBy, reason ?? null]
+      );
+
+      // Обновляем бронь: slot_id + денормализованные поля
+      const result = await client.query<Booking>(
+        `UPDATE bookings
+         SET slot_id = $1, field_name = $2, field_price = $3, sport_type = $4
+         WHERE id = $5
+         RETURNING *`,
+        [newSlotId, newSlot.field_name, newSlot.field_price, newSlot.sport_types?.[0] || null, bookingId]
+      );
+
+      await client.query('COMMIT');
+      return result.rows[0] || null;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getBookingRescheduleHistory(bookingId: string): Promise<Array<{
+    id: string;
+    old_field_name: string;
+    new_field_name: string;
+    old_date: string;
+    old_start_time: string;
+    new_date: string;
+    new_start_time: string;
+    rescheduled_by_name: string | null;
+    reason: string | null;
+    created_at: string;
+  }>> {
+    const result = await this.db.query(
+      `SELECT
+         r.id, r.old_field_name, r.new_field_name, r.reason, r.created_at,
+         os.date as old_date, os.start_time as old_start_time,
+         ns.date as new_date, ns.start_time as new_start_time,
+         u.name as rescheduled_by_name
+       FROM booking_reschedules r
+       JOIN booking_slots os ON r.old_slot_id = os.id
+       JOIN booking_slots ns ON r.new_slot_id = ns.id
+       LEFT JOIN users u ON r.rescheduled_by = u.id
+       WHERE r.booking_id = $1
+       ORDER BY r.created_at ASC`,
+      [bookingId]
+    );
+
+    return result.rows.map(row => ({
+      id: row.id,
+      old_field_name: row.old_field_name,
+      new_field_name: row.new_field_name,
+      old_date: row.old_date instanceof Date ? row.old_date.toISOString().split('T')[0] : row.old_date,
+      old_start_time: row.old_start_time,
+      new_date: row.new_date instanceof Date ? row.new_date.toISOString().split('T')[0] : row.new_date,
+      new_start_time: row.new_start_time,
+      rescheduled_by_name: row.rescheduled_by_name,
+      reason: row.reason,
+      created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    }));
   }
 
   // ==================== HELPERS ====================

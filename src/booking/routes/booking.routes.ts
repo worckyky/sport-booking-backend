@@ -443,6 +443,46 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   );
 
+  // PUT /booking/:id/reschedule — перенести бронь на другой слот (только владелец campaign)
+  router.put(
+    '/:id/reschedule',
+    authMiddleware(db),
+    bookingCampaignOwnerMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const { new_slot_id, reason } = req.body;
+        if (!new_slot_id) {
+          return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'new_slot_id is required', 'new_slot_id');
+        }
+        if (!isValidUUID(new_slot_id)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid new_slot_id format', 'new_slot_id');
+        }
+        const booking = await api.rescheduleBooking(req.params.id, new_slot_id, req.userId!, reason);
+        if (!booking) {
+          return Errors.notFound(res, 'Booking');
+        }
+        res.json(booking);
+      } catch (error) {
+        handleError(res, error);
+      }
+    }
+  );
+
+  // GET /booking/:id/reschedules — история переносов брони
+  router.get(
+    '/:id/reschedules',
+    authMiddleware(db),
+    bookingCampaignOwnerMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const history = await api.getBookingRescheduleHistory(req.params.id);
+        res.json(history);
+      } catch (error) {
+        handleError(res, error);
+      }
+    }
+  );
+
   // PUT /booking/admin/bulk-status — массовое обновление статусов (только для ADMIN)
   router.put('/admin/bulk-status', adminMiddleware(db), async (req: AuthRequest, res: Response) => {
     try {
