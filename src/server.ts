@@ -1,10 +1,12 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.config';
 import { AuthRoutes } from './authentication/routes/auth.routes';
 import createCampaignRoutes from './campaign/routes/campaign.routes';
+import createBookingRoutes from './booking/routes/booking.routes';
 import { getJwtSecret } from './config/auth';
 import { getDbPool } from './config/db';
 import { runMigrations } from './scripts/migrations';
@@ -57,6 +59,7 @@ async function start(): Promise<void> {
   // Initialize routes
   const authRoutes = new AuthRoutes(db);
   const campaignRoutes = createCampaignRoutes(db);
+  const bookingRoutes = createBookingRoutes(db);
 
   // Swagger UI
   app.use('/api-docs', swaggerUi.serve);
@@ -65,15 +68,43 @@ async function start(): Promise<void> {
     customSiteTitle: 'Sport Booking API Docs'
   }));
 
-  // Use routes
-  app.use('/auth', authRoutes.getRouter());
+  // Rate limiting (disabled in development)
+  const isDev = process.env.NODE_ENV !== 'production';
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: isDev ? 10000 : 500, // virtually unlimited in dev, 500 in prod
+    message: { error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests, please try again later' } },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  const bookingLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: process.env.NODE_ENV === 'production' ? 60 : 200, // 60 in prod, 200 in dev
+    message: { error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many booking requests, please slow down' } },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // Use routes with rate limiting
+  app.use('/auth', authLimiter, authRoutes.getRouter());
   app.use('/campaign', campaignRoutes);
+  app.use('/booking', bookingLimiter, bookingRoutes);
 
   // Health check endpoint
   app.get('/health', (req: Request, res: Response<HealthResponse>) => {
     res.json({
       status: 'ok',
       timestamp: new Date().toISOString()
+    });
+  });
+
+  // Server time endpoint for client synchronization
+  app.get('/server-time', (req: Request, res: Response) => {
+    const now = Date.now();
+    res.json({
+      timestamp: new Date(now).toISOString(),
+      unixMs: now
     });
   });
 

@@ -239,4 +239,95 @@ export class AuthAPI {
 
     return { message: 'Password updated successfully', userId };
   }
+
+  /**
+   * Получить пользователя по ID (только для ADMIN)
+   */
+  async getUserById(userId: string): Promise<{
+    id: string;
+    email: string;
+    name: string | null;
+    phone: string | null;
+    role: USER_ROLE;
+    email_verified: EMAIL_STATUS;
+    is_blocked: boolean;
+    created_at: string;
+  } | null> {
+    const result = await this.db.query<DbUser>(
+      `SELECT id, email, name, phone, role, email_verified, is_blocked, created_at
+       FROM users
+       WHERE id = $1`,
+      [userId]
+    );
+
+    if (result.rowCount === 0) {
+      return null;
+    }
+
+    const user = result.rows[0];
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      phone: user.phone,
+      role: user.role,
+      email_verified: user.email_verified ?? EMAIL_STATUS.NOT_VERIFIED,
+      is_blocked: user.is_blocked ?? false,
+      created_at: user.created_at
+    };
+  }
+
+  /**
+   * Получить всех пользователей (только для ADMIN)
+   */
+  async getAllUsers(): Promise<Array<{
+    id: string;
+    email: string;
+    name: string | null;
+    phone: string | null;
+    role: USER_ROLE;
+    email_verified: EMAIL_STATUS;
+    is_blocked: boolean;
+    created_at: string;
+  }>> {
+    const result = await this.db.query<DbUser>(
+      `SELECT id, email, name, phone, role, email_verified, is_blocked, created_at
+       FROM users
+       ORDER BY created_at DESC`
+    );
+
+    return result.rows.map(user => ({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      phone: user.phone,
+      role: user.role,
+      email_verified: user.email_verified ?? EMAIL_STATUS.NOT_VERIFIED,
+      is_blocked: user.is_blocked ?? false,
+      created_at: user.created_at
+    }));
+  }
+
+  /**
+   * Заблокировать/разблокировать пользователя (только для ADMIN)
+   */
+  async setUserBlocked(userId: string, isBlocked: boolean): Promise<{
+    id: string;
+    email: string;
+    is_blocked: boolean;
+  }> {
+    const result = await this.db.query<Pick<DbUser, 'id' | 'email' | 'is_blocked'>>(
+      `UPDATE users
+       SET is_blocked = $1, updated_at = now()
+       WHERE id = $2
+       RETURNING id, email, is_blocked`,
+      [isBlocked, userId]
+    );
+
+    if (result.rowCount === 0) {
+      throw new Error('User not found');
+    }
+
+    return result.rows[0];
+  }
 }

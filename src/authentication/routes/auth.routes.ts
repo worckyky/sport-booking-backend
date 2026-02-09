@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { AuthAPI } from '../api/auth.api';
+import { BookingAPI } from '../../booking/api/booking.api';
 import jwt from 'jsonwebtoken';
 import type { Pool } from 'pg';
 import { AUTH_COOKIE_NAME, AUTH_TOKEN_TTL_SECONDS, getJwtSecret } from '../../config/auth';
@@ -13,16 +14,19 @@ import {
   USER_ROLE
 } from '../model/auth.model';
 import { authMiddleware, AuthRequest as AuthReq } from '../middleware/auth.middleware';
+import { adminMiddleware } from '../middleware/admin.middleware';
 import type { DbUser } from '../model/user.model';
 
 export class AuthRoutes {
   private router: Router;
   private authAPI: AuthAPI;
+  private bookingAPI: BookingAPI;
   private db: Pool;
 
   constructor(db: Pool) {
     this.router = Router();
     this.authAPI = new AuthAPI(db);
+    this.bookingAPI = new BookingAPI(db);
     this.db = db;
     this.initializeRoutes();
   }
@@ -57,12 +61,14 @@ export class AuthRoutes {
     };
 
     if (user.role === USER_ROLE.CAMPAIGN) {
-      const campaignRes = await this.db.query<{ id: string }>(
-        'select id from campaign_info where user_id = $1 limit 1',
+      const campaignRes = await this.db.query<{ id: string; timezone_id: string | null; name: string | null }>(
+        'select id, timezone_id, name from campaign_info where user_id = $1 limit 1',
         [userId]
       );
       if ((campaignRes.rowCount ?? 0) > 0) {
         profile.campaign_id = campaignRes.rows[0].id;
+        profile.campaign_timezone_id = campaignRes.rows[0].timezone_id ?? 'Europe/Moscow';
+        profile.campaign_name = campaignRes.rows[0].name ?? undefined;
       }
     }
 
@@ -315,6 +321,107 @@ export class AuthRoutes {
       } catch (error) {
         if (error instanceof Error) {
           res.status(400).json({ error: error.message });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    // Admin routes
+    this.router.get('/admin/users', adminMiddleware(this.db), async (_req: AuthReq, res: Response) => {
+      try {
+        const users = await this.authAPI.getAllUsers();
+        res.json(users);
+      } catch (error) {
+        if (error instanceof Error) {
+          res.status(400).json({ error: error.message });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    // Get single user by ID (admin only)
+    this.router.get('/admin/users/:id', adminMiddleware(this.db), async (req: AuthReq, res: Response) => {
+      try {
+        const userId = req.params.id;
+        if (!userId) {
+          return res.status(400).json({ error: 'User ID is required' });
+        }
+
+        const user = await this.authAPI.getUserById(userId);
+        if (!user) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+
+        res.json(user);
+      } catch (error) {
+        if (error instanceof Error) {
+          res.status(400).json({ error: error.message });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    this.router.get('/admin/bookings', adminMiddleware(this.db), async (req: AuthReq, res: Response) => {
+      try {
+        const { page, limit } = req.query;
+        const pagination = {
+          page: page ? parseInt(page as string, 10) : undefined,
+          limit: limit ? parseInt(limit as string, 10) : undefined,
+        };
+        const result = await this.bookingAPI.getAllBookings(pagination);
+        res.json(result);
+      } catch (error) {
+        if (error instanceof Error) {
+          res.status(400).json({ error: error.message });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    // Block user (admin only)
+    this.router.put('/admin/users/:id/block', adminMiddleware(this.db), async (req: AuthReq, res: Response) => {
+      try {
+        const userId = req.params.id;
+        if (!userId) {
+          return res.status(400).json({ error: 'User ID is required' });
+        }
+
+        const result = await this.authAPI.setUserBlocked(userId, true);
+        res.json(result);
+      } catch (error) {
+        if (error instanceof Error) {
+          if (error.message === 'User not found') {
+            res.status(404).json({ error: error.message });
+          } else {
+            res.status(400).json({ error: error.message });
+          }
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    // Unblock user (admin only)
+    this.router.put('/admin/users/:id/unblock', adminMiddleware(this.db), async (req: AuthReq, res: Response) => {
+      try {
+        const userId = req.params.id;
+        if (!userId) {
+          return res.status(400).json({ error: 'User ID is required' });
+        }
+
+        const result = await this.authAPI.setUserBlocked(userId, false);
+        res.json(result);
+      } catch (error) {
+        if (error instanceof Error) {
+          if (error.message === 'User not found') {
+            res.status(404).json({ error: error.message });
+          } else {
+            res.status(400).json({ error: error.message });
+          }
         } else {
           res.status(500).json({ error: 'Internal server error' });
         }

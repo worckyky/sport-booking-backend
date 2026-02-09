@@ -1,3 +1,10 @@
+export enum CampaignStatus {
+  DRAFT = 'draft',
+  PENDING = 'pending',
+  PUBLISHED = 'published',
+  SUSPENDED = 'suspended'
+}
+
 export enum SocialLinkType {
   VK = 'VK',
   TELEGRAM = 'TELEGRAM',
@@ -14,19 +21,36 @@ export enum Facility {
   PARKING = 'PARKING',
   SHOWER = 'SHOWER',
   LOCKER_ROOM = 'LOCKER_ROOM',
+  STORAGE = 'STORAGE',
   WIFI = 'WIFI',
   LIGHTING = 'LIGHTING',
+  STANDS = 'STANDS',
+  MUSIC = 'MUSIC',
   AIR_CONDITIONING = 'AIR_CONDITIONING',
+  HEATING = 'HEATING',
   CAFE = 'CAFE',
   RENTAL = 'RENTAL',
+  TRAINERS = 'TRAINERS',
+  RESTROOM = 'RESTROOM',
   VIDEO_SURVEILLANCE = 'VIDEO_SURVEILLANCE'
 }
 
 export enum Sport {
   FOOTBALL = 'FOOTBALL',
+  MINI_FOOTBALL = 'MINI_FOOTBALL',
   BASKETBALL = 'BASKETBALL',
+  VOLLEYBALL = 'VOLLEYBALL',
   TENNIS = 'TENNIS',
-  VOLLEYBALL = 'VOLLEYBALL'
+  TABLE_TENNIS = 'TABLE_TENNIS',
+  BADMINTON = 'BADMINTON',
+  SQUASH = 'SQUASH',
+  PADEL = 'PADEL',
+  HOCKEY = 'HOCKEY',
+  FITNESS = 'FITNESS',
+  YOGA = 'YOGA',
+  SWIMMING = 'SWIMMING',
+  MARTIAL_ARTS = 'MARTIAL_ARTS',
+  OTHER = 'OTHER'
 }
 
 export interface Location {
@@ -86,8 +110,10 @@ export interface Campaign {
   socials_links: SocialLink[] | null;
   payment_methods: PaymentMethod[] | null;
   facilities: Facility[] | null;
-  sports: Sport[] | null;
   media: Media | null;
+  booking_info: string | null;
+  timezone_id: string;
+  status: CampaignStatus;
   created_at: string;
   updated_at: string;
 }
@@ -106,6 +132,9 @@ export interface CampaignResponse {
   facilities: Facility[] | null;
   sports: Sport[] | null;
   media: Media | null;
+  bookingInfo: string | null;
+  timezoneId: string;
+  status: CampaignStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -120,8 +149,9 @@ export interface CreateCampaignRequest {
   socialsLinks?: SocialLink[];
   paymentMethods?: PaymentMethod[];
   facilities?: Facility[];
-  sports?: Sport[];
   media?: Media;
+  bookingInfo?: string;
+  timezoneId?: string;
 }
 
 export interface UpdateCampaignRequest {
@@ -134,6 +164,7 @@ export interface UpdateCampaignRequest {
   socialsLinks?: SocialLink[];
   paymentMethods?: PaymentMethod[];
   facilities?: Facility[];
-  sports?: Sport[];
   media?: Media;
+  bookingInfo?: string;
+  timezoneId?: string;
 }
