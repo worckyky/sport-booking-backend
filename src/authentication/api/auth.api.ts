@@ -45,7 +45,11 @@ export class AuthAPI {
     };
   }
 
-  async signUp(credentials: AuthRequest): Promise<SignInResponse & { accessToken: string }> {
+  async signUp(
+    credentials: AuthRequest,
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<SignInResponse & { accessToken: string }> {
     const email = credentials.email.trim().toLowerCase();
     const role = credentials.role ?? USER_ROLE.USER;
     const id = crypto.randomUUID();
@@ -82,6 +86,8 @@ export class AuthAPI {
         ]
       );
 
+      const userId = inserted.rows[0].id;
+
       if (role === USER_ROLE.CAMPAIGN) {
         const campaignId = crypto.randomUUID();
         await client.query(
@@ -89,17 +95,34 @@ export class AuthAPI {
             insert into campaign_info (id, user_id, name, created_at, updated_at)
             values ($1, $2, $3, $4, $5)
           `,
-          [campaignId, inserted.rows[0].id, campaignName, now, now]
+          [campaignId, userId, campaignName, now, now]
         );
 
         await client.query('update users set campaign_id = $1 where id = $2', [
           campaignId,
-          inserted.rows[0].id
+          userId
         ]);
       }
 
+      // Сохраняем согласия в user_consents (если даны)
+      if (credentials.consent_personal_data) {
+        await client.query(
+          `insert into user_consents (user_id, consent_type, accepted, ip_address, user_agent)
+           values ($1, 'PERSONAL_DATA', true, $2, $3)`,
+          [userId, ipAddress ?? null, userAgent ?? null]
+        );
+      }
+
+      if (credentials.consent_terms) {
+        await client.query(
+          `insert into user_consents (user_id, consent_type, accepted, ip_address, user_agent)
+           values ($1, 'TERMS', true, $2, $3)`,
+          [userId, ipAddress ?? null, userAgent ?? null]
+        );
+      }
+
       // Отправляем письмо подтверждения регистрации (локально, без Supabase)
-      const confirmToken = createEmailConfirmToken(inserted.rows[0].id);
+      const confirmToken = createEmailConfirmToken(userId);
       await sendEmailConfirmation(email, confirmToken);
 
       const accessToken = jwt.sign({}, getJwtSecret(), {

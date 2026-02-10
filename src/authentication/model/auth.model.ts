@@ -17,6 +17,8 @@ export interface AuthRequest {
   phone?: string;
   role?: USER_ROLE;
   date_of_birth?: string;
+  consent_personal_data?: boolean;
+  consent_terms?: boolean;
 }
 
 export interface SignInRequest {

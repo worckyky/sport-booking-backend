@@ -140,7 +140,7 @@ export class AuthRoutes {
 
     this.router.post('/signup', async (req: Request<{}, any, AuthRequest>, res: Response) => {
       try {
-        const { email, password, role, name, phone, date_of_birth } = req.body;
+        const { email, password, role, name, phone, date_of_birth, consent_personal_data, consent_terms } = req.body;
 
         if (!email || !password) {
           return res.status(400).json({ error: 'Email and password are required' });
@@ -150,7 +150,14 @@ export class AuthRoutes {
           return res.status(400).json({ error: 'Invalid role' });
         }
 
-        const data = await this.authAPI.signUp({ email, password, role, name, phone, date_of_birth });
+        const ipAddress = req.ip || req.socket.remoteAddress;
+        const userAgent = req.headers['user-agent'];
+
+        const data = await this.authAPI.signUp(
+          { email, password, role, name, phone, date_of_birth, consent_personal_data, consent_terms },
+          ipAddress,
+          userAgent
+        );
         
         this.setAuthCookie(res, data.accessToken);
 
