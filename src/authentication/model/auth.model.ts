@@ -28,6 +28,7 @@ export interface SignInRequest {
 
 export interface SignInResponse {
   id: string;
+  role: USER_ROLE;
   email_verified: EMAIL_STATUS;
 }
 

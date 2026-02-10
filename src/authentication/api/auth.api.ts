@@ -33,7 +33,7 @@ export class AuthAPI {
       throw new Error('Invalid email or password');
     }
 
-    const accessToken = jwt.sign({}, getJwtSecret(), {
+    const accessToken = jwt.sign({ role: user.role }, getJwtSecret(), {
       subject: user.id,
       expiresIn: AUTH_TOKEN_TTL_SECONDS
     });
@@ -41,6 +41,7 @@ export class AuthAPI {
     return {
       id: user.id,
       accessToken,
+      role: user.role,
       email_verified: getEmailStatus(user)
     };
   }
@@ -125,7 +126,7 @@ export class AuthAPI {
       const confirmToken = createEmailConfirmToken(userId);
       await sendEmailConfirmation(email, confirmToken);
 
-      const accessToken = jwt.sign({}, getJwtSecret(), {
+      const accessToken = jwt.sign({ role }, getJwtSecret(), {
         subject: inserted.rows[0].id,
         expiresIn: AUTH_TOKEN_TTL_SECONDS
       });
@@ -135,6 +136,7 @@ export class AuthAPI {
       return {
         id: inserted.rows[0].id,
         accessToken,
+        role,
         email_verified: EMAIL_STATUS.NOT_VERIFIED
       };
     } catch (error) {
@@ -167,13 +169,15 @@ export class AuthAPI {
       throw new Error('Invalid confirmation link');
     }
 
-    await this.db.query(
-      `update users set email_verified = 'VERIFIED'::email_status, updated_at = now() where id = $1`,
+    const userResult = await this.db.query<Pick<DbUser, 'role'>>(
+      `update users set email_verified = 'VERIFIED'::email_status, updated_at = now() where id = $1 returning role`,
       [userId]
     );
 
+    const userRole = userResult.rows[0]?.role ?? USER_ROLE.USER;
+
     // После подтверждения выдаём обычный auth_token (7 дней), а не токен подтверждения
-    const authToken = jwt.sign({}, getJwtSecret(), {
+    const authToken = jwt.sign({ role: userRole }, getJwtSecret(), {
       subject: userId,
       expiresIn: AUTH_TOKEN_TTL_SECONDS
     });

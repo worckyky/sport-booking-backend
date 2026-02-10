@@ -124,9 +124,10 @@ export class AuthRoutes {
         
         this.setAuthCookie(res, data.accessToken);
 
-        // Возвращаем ID и статус верификации email
-        res.json({ 
+        // Возвращаем ID, роль и статус верификации email
+        res.json({
           id: data.id,
+          role: data.role,
           email_verified: data.email_verified
         });
       } catch (error) {
@@ -161,9 +162,10 @@ export class AuthRoutes {
         
         this.setAuthCookie(res, data.accessToken);
 
-        // Возвращаем ID и статус верификации email
-        res.json({ 
+        // Возвращаем ID, роль и статус верификации email
+        res.json({
           id: data.id,
+          role: data.role,
           email_verified: data.email_verified
         });
       } catch (error) {
@@ -309,13 +311,12 @@ export class AuthRoutes {
           confirmPassword
         );
 
-        const newJwt = jwt.sign({}, getJwtSecret(), {
+        const profile = await this.getUserProfileById(updated.userId);
+        const newJwt = jwt.sign({ role: profile?.role ?? USER_ROLE.USER }, getJwtSecret(), {
           subject: updated.userId,
           expiresIn: AUTH_TOKEN_TTL_SECONDS
         });
         this.setAuthCookie(res, newJwt);
-
-        const profile = await this.getUserProfileById(updated.userId);
         if (!profile) {
           return res.status(404).json({ error: 'User profile not found' });
         }

@@ -1,7 +1,39 @@
 import { Response, NextFunction } from 'express';
 import type { Pool } from 'pg';
 import { AuthRequest } from '../../authentication/middleware/auth.middleware';
+import { USER_ROLE } from '../../authentication/model/auth.model';
 import { isValidUUID } from '../../utils/uuid';
+
+// Проверяет что пользователь имеет роль USER (только клиенты могут бронировать)
+export const userRoleMiddleware = (db: Pool) => {
+  return async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.userId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const result = await db.query<{ role: string }>(
+        'SELECT role FROM users WHERE id = $1',
+        [req.userId]
+      );
+
+      if (result.rows.length === 0) {
+        res.status(401).json({ error: 'User not found' });
+        return;
+      }
+
+      if (result.rows[0].role !== USER_ROLE.USER) {
+        res.status(403).json({ error: 'Бронирование доступно только для аккаунтов игроков' });
+        return;
+      }
+
+      next();
+    } catch (error) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  };
+};
 
 // Проверяет что пользователь не заблокирован (для создания брони)
 export const notBlockedMiddleware = (db: Pool) => {
