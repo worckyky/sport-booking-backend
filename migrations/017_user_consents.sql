@@ -13,9 +13,9 @@ CREATE TABLE IF NOT EXISTS user_consents (
   CONSTRAINT user_consent_type_check CHECK (consent_type IN ('PERSONAL_DATA', 'TERMS', 'DATA_SHARING_TO_CAMPAIGN', 'MARKETING'))
 );
 
-CREATE INDEX idx_user_consents_user_id ON user_consents(user_id);
-CREATE INDEX idx_user_consents_type ON user_consents(consent_type);
-CREATE INDEX idx_user_consents_user_type ON user_consents(user_id, consent_type);
+CREATE INDEX IF NOT EXISTS idx_user_consents_user_id ON user_consents(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_consents_type ON user_consents(consent_type);
+CREATE INDEX IF NOT EXISTS idx_user_consents_user_type ON user_consents(user_id, consent_type);
 
 COMMENT ON TABLE user_consents IS 'Аудит всех согласий пользователей (152-ФЗ)';
 COMMENT ON COLUMN user_consents.consent_type IS 'PERSONAL_DATA | TERMS | DATA_SHARING_TO_CAMPAIGN | MARKETING';
