@@ -153,3 +153,56 @@ export interface BookingDetails extends Booking {
   user?: BookingUser;
   campaign_timezone_id?: string;  // IANA timezone ID (e.g., 'Europe/Moscow')
 }
+
+// === Campaign Stats (dashboard aggregations) ===
+
+export interface MonthlyStats {
+  revenue: number;
+  revenueTrend: number;
+  bookingsCount: number;
+  bookingsTrend: number;
+  uniqueClients: {
+    platform: number;
+    manual: number;
+    total: number;
+  };
+  uniqueClientsTrend: number;
+  newClients: number;
+  newClientsTrend: number;
+}
+
+export interface RevenueByDay {
+  date: string;
+  platform: number;
+  manual: number;
+  bookingsCount: number;
+}
+
+export interface WeekOccupancy {
+  percent: number;
+  bookedSlots: number;
+  totalSlots: number;
+}
+
+export interface HeatmapCell {
+  dayOfWeek: number;
+  hour: number;
+  count: number;
+  intensity: number;
+}
+
+export interface CampaignStats {
+  monthly: MonthlyStats;
+  revenueByDay: RevenueByDay[];
+  weekOccupancy: WeekOccupancy;
+  heatmapData: HeatmapCell[];
+  heatmapMinHour: number;
+  heatmapMaxHour: number;
+  dateRanges: {
+    currentStart: string;
+    yesterday: string;
+    revenueStart: string;
+    weekStart: string;
+    weekEnd: string;
+  };
+}

@@ -11,7 +11,10 @@ import {
   BookingDetails,
   FieldDaySchedule,
   FieldWorkingTimetable,
-  DayOfWeek
+  DayOfWeek,
+  CampaignStats,
+  RevenueByDay,
+  HeatmapCell,
 } from '../model/booking.model';
 import { toJsonbValue } from '../../utils/pg';
 import { normalizePhone } from '../../utils/phone';
@@ -1968,5 +1971,272 @@ export class BookingAPI {
       },
       campaign_name: row.campaign_name || null,
     }));
+  }
+
+  // ==================== CAMPAIGN STATS ====================
+
+  private static readonly DAYS_ORDER: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+  private static readonly ACTIVE_STATUSES = `('confirmed','completed','pending')`;
+  private static readonly REVENUE_STATUSES = `('confirmed','completed')`;
+
+  private calcTrend(current: number, previous: number): number {
+    if (previous === 0 && current > 0) return 100;
+    if (previous === 0 && current === 0) return 0;
+    return Math.round(((current - previous) / previous) * 100);
+  }
+
+  private parseTime(timeStr: string): number {
+    const [h, m] = timeStr.split(':').map(Number);
+    return h * 60 + m;
+  }
+
+  private getSlotsPerDay(field: Field, dayOfWeek: DayOfWeek): number {
+    const timetable = field.working_timetable;
+    if (!timetable) return 0;
+    const daySchedule = timetable[dayOfWeek];
+    if (!daySchedule) return 0;
+    const fromMinutes = this.parseTime(daySchedule.from);
+    const toMinutes = this.parseTime(daySchedule.to);
+    let availableMinutes = toMinutes - fromMinutes;
+    if (daySchedule.breaks) {
+      for (const brk of daySchedule.breaks) {
+        availableMinutes -= (this.parseTime(brk.to) - this.parseTime(brk.from));
+      }
+    }
+    const duration = field.slot_duration || 60;
+    return Math.floor(availableMinutes / duration);
+  }
+
+  private getWorkingHoursRange(fields: Field[]): { minHour: number; maxHour: number } {
+    let minHour = 23;
+    let maxHour = 0;
+    for (const field of fields) {
+      if (field.status !== 'active' || !field.working_timetable) continue;
+      for (const day of BookingAPI.DAYS_ORDER) {
+        const schedule = field.working_timetable[day];
+        if (!schedule) continue;
+        const fromH = parseInt(schedule.from.split(':')[0], 10);
+        const toH = parseInt(schedule.to.split(':')[0], 10);
+        if (fromH < minHour) minHour = fromH;
+        if (toH > maxHour) maxHour = toH;
+      }
+    }
+    return { minHour: minHour === 23 ? 8 : minHour, maxHour: maxHour === 0 ? 22 : maxHour };
+  }
+
+  async getCampaignStats(campaignId: string, timezoneId: string): Promise<CampaignStats> {
+    // 1. Compute date ranges in campaign timezone
+    const datesResult = await this.db.query(`
+      SELECT
+        (NOW() AT TIME ZONE $1)::date AS today,
+        (NOW() AT TIME ZONE $1)::date - 1 AS yesterday,
+        (NOW() AT TIME ZONE $1)::date - 28 AS current_start,
+        (NOW() AT TIME ZONE $1)::date - 56 AS prev_start,
+        (NOW() AT TIME ZONE $1)::date - 29 AS prev_end,
+        ((NOW() AT TIME ZONE $1)::date - 1) - 29 AS revenue_start,
+        date_trunc('week', (NOW() AT TIME ZONE $1)::date)::date AS week_start
+    `, [timezoneId]);
+
+    const d = datesResult.rows[0];
+    const today = d.today as string;
+    const yesterday = d.yesterday as string;
+    const currentStart = d.current_start as string;
+    const prevStart = d.prev_start as string;
+    const prevEnd = d.prev_end as string;
+    const revenueStart = d.revenue_start as string;
+    const weekStart = d.week_start as string;
+
+    // 2. Run all queries in parallel
+    const [monthlyResult, newClientsResult, revenueByDayResult, heatmapResult, occupancyResult, fields] = await Promise.all([
+      // Monthly stats (revenue, bookings, unique clients)
+      this.db.query(`
+        SELECT
+          COALESCE(SUM(CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed') THEN f.price_per_hour ELSE 0 END), 0)::numeric AS current_revenue,
+          COALESCE(SUM(CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed') THEN f.price_per_hour ELSE 0 END), 0)::numeric AS prev_revenue,
+          COUNT(CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed','pending') THEN 1 END)::int AS current_bookings,
+          COUNT(CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed','pending') THEN 1 END)::int AS prev_bookings,
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed','pending') AND b.user_id IS NOT NULL THEN b.user_id END)::int AS current_platform_clients,
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed','pending') AND b.user_id IS NOT NULL THEN b.user_id END)::int AS prev_platform_clients,
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed','pending') AND b.user_id IS NULL AND b.contact_phone IS NOT NULL THEN b.contact_phone END)::int AS current_manual_clients,
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed','pending') AND b.user_id IS NULL AND b.contact_phone IS NOT NULL THEN b.contact_phone END)::int AS prev_manual_clients
+        FROM bookings b
+        JOIN booking_slots s ON b.slot_id = s.id
+        JOIN fields f ON s.field_id = f.id
+        WHERE f.campaign_id = $1 AND f.deleted_at IS NULL
+          AND s.date BETWEEN $4 AND $3
+      `, [campaignId, currentStart, yesterday, prevStart, prevEnd]),
+
+      // New clients (first booking per user_id)
+      this.db.query(`
+        WITH first_bookings AS (
+          SELECT b.user_id, MIN(s.date) AS first_date
+          FROM bookings b
+          JOIN booking_slots s ON b.slot_id = s.id
+          JOIN fields f ON s.field_id = f.id
+          WHERE f.campaign_id = $1 AND b.user_id IS NOT NULL AND f.deleted_at IS NULL
+          GROUP BY b.user_id
+        )
+        SELECT
+          COUNT(*) FILTER (WHERE first_date BETWEEN $2 AND $3)::int AS new_current,
+          COUNT(*) FILTER (WHERE first_date BETWEEN $4 AND $5)::int AS new_prev
+        FROM first_bookings
+      `, [campaignId, currentStart, yesterday, prevStart, prevEnd]),
+
+      // Revenue by day (30 days)
+      this.db.query(`
+        SELECT s.date::text,
+          COALESCE(SUM(CASE WHEN b.user_id IS NOT NULL THEN f.price_per_hour ELSE 0 END), 0)::numeric AS platform,
+          COALESCE(SUM(CASE WHEN b.user_id IS NULL THEN f.price_per_hour ELSE 0 END), 0)::numeric AS manual,
+          COUNT(*)::int AS bookings_count
+        FROM bookings b
+        JOIN booking_slots s ON b.slot_id = s.id
+        JOIN fields f ON s.field_id = f.id
+        WHERE f.campaign_id = $1 AND s.date BETWEEN $2 AND $3
+          AND b.status IN ('confirmed','completed') AND f.deleted_at IS NULL
+        GROUP BY s.date ORDER BY s.date
+      `, [campaignId, revenueStart, yesterday]),
+
+      // Heatmap (28 days, confirmed/completed)
+      this.db.query(`
+        SELECT
+          (EXTRACT(ISODOW FROM s.date::date)::int - 1) AS dow,
+          EXTRACT(HOUR FROM s.start_time::time)::int AS hour,
+          COUNT(*)::int AS count
+        FROM bookings b
+        JOIN booking_slots s ON b.slot_id = s.id
+        JOIN fields f ON s.field_id = f.id
+        WHERE f.campaign_id = $1 AND s.date BETWEEN $2 AND $3
+          AND b.status IN ('confirmed','completed') AND f.deleted_at IS NULL
+        GROUP BY dow, hour
+      `, [campaignId, currentStart, yesterday]),
+
+      // Occupancy (booked slots this week)
+      this.db.query(`
+        SELECT COUNT(*)::int AS booked_slots
+        FROM bookings b
+        JOIN booking_slots s ON b.slot_id = s.id
+        JOIN fields f ON s.field_id = f.id
+        WHERE f.campaign_id = $1 AND s.date BETWEEN $2 AND $3
+          AND b.status IN ('confirmed','completed','pending') AND f.deleted_at IS NULL
+      `, [campaignId, weekStart, yesterday]),
+
+      // Fields for occupancy totalSlots and working hours
+      this.getFieldsByCampaign(campaignId),
+    ]);
+
+    // 3. Process monthly stats
+    const m = monthlyResult.rows[0];
+    const currentRevenue = Number(m.current_revenue);
+    const prevRevenue = Number(m.prev_revenue);
+    const currentBookings = m.current_bookings;
+    const prevBookings = m.prev_bookings;
+    const currentPlatformClients = m.current_platform_clients;
+    const prevPlatformClients = m.prev_platform_clients;
+    const currentManualClients = m.current_manual_clients;
+    const prevManualClients = m.prev_manual_clients;
+    const currentTotalClients = currentPlatformClients + currentManualClients;
+    const prevTotalClients = prevPlatformClients + prevManualClients;
+
+    const nc = newClientsResult.rows[0];
+    const newClientsCurrent = nc.new_current;
+    const newClientsPrev = nc.new_prev;
+
+    // 4. Process revenue by day (fill gaps for empty days)
+    const revenueMap = new Map<string, { platform: number; manual: number; bookingsCount: number }>();
+    for (const row of revenueByDayResult.rows) {
+      revenueMap.set(row.date, {
+        platform: Number(row.platform),
+        manual: Number(row.manual),
+        bookingsCount: row.bookings_count,
+      });
+    }
+    const revenueByDay: RevenueByDay[] = [];
+    const revStartDate = new Date(revenueStart);
+    const yesterdayDate = new Date(yesterday);
+    for (let d = new Date(revStartDate); d <= yesterdayDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().slice(0, 10);
+      const data = revenueMap.get(dateStr);
+      revenueByDay.push({
+        date: dateStr,
+        platform: data?.platform ?? 0,
+        manual: data?.manual ?? 0,
+        bookingsCount: data?.bookingsCount ?? 0,
+      });
+    }
+
+    // 5. Process heatmap
+    const activeFields = fields.filter(f => f.status === 'active');
+    const { minHour, maxHour } = this.getWorkingHoursRange(activeFields);
+
+    const heatmapMap = new Map<string, number>();
+    let heatmapMax = 0;
+    for (const row of heatmapResult.rows) {
+      const key = `${row.dow}:${row.hour}`;
+      heatmapMap.set(key, row.count);
+      if (row.count > heatmapMax) heatmapMax = row.count;
+    }
+
+    const heatmapData: HeatmapCell[] = [];
+    for (let dow = 0; dow < 7; dow++) {
+      for (let hour = minHour; hour < maxHour; hour++) {
+        const count = heatmapMap.get(`${dow}:${hour}`) || 0;
+        heatmapData.push({
+          dayOfWeek: dow,
+          hour,
+          count,
+          intensity: heatmapMax > 0 ? count / heatmapMax : 0,
+        });
+      }
+    }
+
+    // 6. Process occupancy
+    const bookedSlots = occupancyResult.rows[0].booked_slots;
+    let totalSlots = 0;
+    const weekStartDate = new Date(weekStart);
+    const todayDate = new Date(today);
+    for (let d = new Date(weekStartDate); d < todayDate; d.setDate(d.getDate() + 1)) {
+      const dow = (d.getDay() === 0 ? 6 : d.getDay() - 1); // 0=Mon
+      for (const field of activeFields) {
+        totalSlots += this.getSlotsPerDay(field, BookingAPI.DAYS_ORDER[dow]);
+      }
+    }
+
+    // Compute weekEnd for display (min of yesterday, weekStart + 6)
+    const weekEndDate = new Date(weekStart);
+    weekEndDate.setDate(weekEndDate.getDate() + 6);
+    const weekEnd = yesterdayDate < weekEndDate ? yesterday : weekEndDate.toISOString().slice(0, 10);
+
+    return {
+      monthly: {
+        revenue: currentRevenue,
+        revenueTrend: this.calcTrend(currentRevenue, prevRevenue),
+        bookingsCount: currentBookings,
+        bookingsTrend: this.calcTrend(currentBookings, prevBookings),
+        uniqueClients: {
+          platform: currentPlatformClients,
+          manual: currentManualClients,
+          total: currentTotalClients,
+        },
+        uniqueClientsTrend: this.calcTrend(currentTotalClients, prevTotalClients),
+        newClients: newClientsCurrent,
+        newClientsTrend: this.calcTrend(newClientsCurrent, newClientsPrev),
+      },
+      revenueByDay,
+      weekOccupancy: {
+        percent: totalSlots > 0 ? Math.round((bookedSlots / totalSlots) * 100) : 0,
+        bookedSlots,
+        totalSlots,
+      },
+      heatmapData,
+      heatmapMinHour: minHour,
+      heatmapMaxHour: maxHour,
+      dateRanges: {
+        currentStart,
+        yesterday,
+        revenueStart,
+        weekStart,
+        weekEnd,
+      },
+    };
   }
 }

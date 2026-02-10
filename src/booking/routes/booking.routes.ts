@@ -11,8 +11,10 @@ import {
   bookingCampaignOwnerMiddleware,
   campaignOwnerMiddleware,
   notBlockedMiddleware,
-  activeBookingLimitMiddleware
+  activeBookingLimitMiddleware,
+  userRoleMiddleware
 } from '../middleware/booking.middleware';
+import { campaignRoleMiddleware } from '../../campaign/middleware/campaign.middleware';
 import { isValidUUID } from '../../utils/uuid';
 import { Errors, ErrorCode, handleError, sendError } from '../../utils/errors';
 
@@ -26,11 +28,11 @@ export default function createBookingRoutes(db: Pool): Router {
     max: process.env.NODE_ENV === 'production' ? 5 : 100,
     keyGenerator: (req: Request) => {
       // Извлекаем userId из JWT cookie для per-user лимита
-      const token = req.cookies?.sport_booking_token;
+      const token = req.cookies?.auth_token;
       if (token) {
         try {
-          const decoded = jwt.decode(token) as { userId?: string } | null;
-          if (decoded?.userId) return `create-booking:user:${decoded.userId}`;
+          const decoded = jwt.decode(token) as { sub?: string } | null;
+          if (decoded?.sub) return `create-booking:user:${decoded.sub}`;
         } catch {}
       }
       return `create-booking:ip:${req.ip}`;
@@ -326,6 +328,37 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   );
 
+  // ==================== STATS ====================
+
+  // GET /booking/stats?campaign_id= — агрегированная статистика площадки (только владелец campaign)
+  router.get(
+    '/stats',
+    authMiddleware(db),
+    campaignOwnerMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const { campaign_id } = req.query;
+        if (!campaign_id || typeof campaign_id !== 'string') {
+          return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'campaign_id query parameter required', 'campaign_id');
+        }
+        if (!isValidUUID(campaign_id)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid campaign_id format', 'campaign_id');
+        }
+        // Get timezone from campaign
+        const tzResult = await db.query(
+          'SELECT timezone_id FROM campaign_info WHERE id = $1',
+          [campaign_id]
+        );
+        const timezoneId = tzResult.rows[0]?.timezone_id || 'Europe/Moscow';
+
+        const stats = await api.getCampaignStats(campaign_id, timezoneId);
+        res.json(stats);
+      } catch (error) {
+        Errors.internal(res);
+      }
+    }
+  );
+
   // ==================== BOOKINGS ====================
 
   // GET /booking/my — мои бронирования (авторизованный пользователь)
@@ -363,7 +396,7 @@ export default function createBookingRoutes(db: Pool): Router {
   );
 
   // POST /booking — создать бронь (авторизованный пользователь, не заблокированный, не превышен лимит)
-  router.post('/', createBookingLimiter, authMiddleware(db), notBlockedMiddleware(db), activeBookingLimitMiddleware(db, 10), async (req: AuthRequest, res: Response) => {
+  router.post('/', createBookingLimiter, authMiddleware(db), userRoleMiddleware(db), notBlockedMiddleware(db), activeBookingLimitMiddleware(db, 10), async (req: AuthRequest, res: Response) => {
     try {
       const { slot_id, comment, contact_name, contact_phone } = req.body;
       if (!slot_id) {
@@ -384,6 +417,7 @@ export default function createBookingRoutes(db: Pool): Router {
   router.post(
     '/admin',
     authMiddleware(db),
+    campaignRoleMiddleware(db),
     async (req: AuthRequest, res: Response) => {
       try {
         const { slot_id, contact_name, contact_phone, comment } = req.body;
@@ -421,15 +455,7 @@ export default function createBookingRoutes(db: Pool): Router {
         const booking = await api.createAdminBooking(slot_id, contact_name, contact_phone, comment);
         res.status(201).json(booking);
       } catch (error) {
-        if ((error as Error).message === 'Slot already booked') {
-          res.status(409).json({ error: 'Slot already booked' });
-        } else if ((error as Error).message === 'Slot not found') {
-          res.status(404).json({ error: 'Slot not found' });
-        } else if ((error as Error).message === 'Slot is blocked') {
-          res.status(400).json({ error: 'Slot is blocked' });
-        } else {
-          res.status(400).json({ error: (error as Error).message });
-        }
+        handleError(res, error);
       }
     }
   );
