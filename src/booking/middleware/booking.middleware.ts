@@ -34,6 +34,39 @@ export const notBlockedMiddleware = (db: Pool) => {
   };
 };
 
+// Проверяет что у пользователя не превышен лимит активных бронирований
+export const activeBookingLimitMiddleware = (db: Pool, maxBookings = 10) => {
+  return async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.userId) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
+
+      const result = await db.query<{ count: string }>(
+        `SELECT COUNT(*) as count FROM bookings
+         WHERE user_id = $1 AND status IN ('pending', 'confirmed')`,
+        [req.userId]
+      );
+
+      const count = parseInt(result.rows[0].count, 10);
+      if (count >= maxBookings) {
+        res.status(429).json({
+          error: {
+            code: 'BOOKING_LIMIT_EXCEEDED',
+            message: `Достигнут лимит активных бронирований (${maxBookings})`
+          }
+        });
+        return;
+      }
+
+      next();
+    } catch (error) {
+      res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Internal server error' } });
+    }
+  };
+};
+
 // Проверяет что пользователь — владелец площадки (campaign), к которой относится field
 export const fieldOwnerMiddleware = (db: Pool) => {
   return async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {

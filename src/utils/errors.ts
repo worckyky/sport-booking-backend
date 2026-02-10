@@ -34,6 +34,7 @@ export enum ErrorCode {
 
   // Rate limiting
   RATE_LIMIT_EXCEEDED = 'RATE_LIMIT_EXCEEDED',
+  BOOKING_LIMIT_EXCEEDED = 'BOOKING_LIMIT_EXCEEDED',
 
   // Server
   INTERNAL_ERROR = 'INTERNAL_ERROR',
@@ -148,6 +149,19 @@ export function mapErrorToResponse(error: Error): { status: number; response: Ap
  * Handle error and send response
  */
 export function handleError(res: Response, error: unknown): void {
+  // PostgreSQL error codes (e.g. unique_violation from race condition)
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const pgError = error as { code?: string; constraint?: string };
+    if (pgError.code === '23505') {
+      if (pgError.constraint?.includes('idx_bookings_slot_active')) {
+        res.status(409).json(createError(ErrorCode.SLOT_ALREADY_BOOKED, 'Slot already booked'));
+        return;
+      }
+      res.status(409).json(createError(ErrorCode.CONFLICT, 'Resource already exists'));
+      return;
+    }
+  }
+
   if (error instanceof Error) {
     const { status, response } = mapErrorToResponse(error);
     res.status(status).json(response);

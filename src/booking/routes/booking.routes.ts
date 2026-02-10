@@ -1,5 +1,7 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
+import rateLimit from 'express-rate-limit';
+import jwt from 'jsonwebtoken';
 import { BookingAPI, ScheduleConflictError } from '../api/booking.api';
 import { authMiddleware, AuthRequest } from '../../authentication/middleware/auth.middleware';
 import { adminMiddleware } from '../../authentication/middleware/admin.middleware';
@@ -8,7 +10,8 @@ import {
   slotOwnerMiddleware,
   bookingCampaignOwnerMiddleware,
   campaignOwnerMiddleware,
-  notBlockedMiddleware
+  notBlockedMiddleware,
+  activeBookingLimitMiddleware
 } from '../middleware/booking.middleware';
 import { isValidUUID } from '../../utils/uuid';
 import { Errors, ErrorCode, handleError, sendError } from '../../utils/errors';
@@ -16,6 +19,28 @@ import { Errors, ErrorCode, handleError, sendError } from '../../utils/errors';
 export default function createBookingRoutes(db: Pool): Router {
   const router = Router();
   const api = new BookingAPI(db);
+
+  // Per-user rate limit для создания бронирований (строже чем общий bookingLimiter)
+  const createBookingLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 минута
+    max: process.env.NODE_ENV === 'production' ? 5 : 100,
+    keyGenerator: (req: Request) => {
+      // Извлекаем userId из JWT cookie для per-user лимита
+      const token = req.cookies?.sport_booking_token;
+      if (token) {
+        try {
+          const decoded = jwt.decode(token) as { userId?: string } | null;
+          if (decoded?.userId) return `create-booking:user:${decoded.userId}`;
+        } catch {}
+      }
+      return `create-booking:ip:${req.ip}`;
+    },
+    message: {
+      error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Слишком много попыток бронирования, подождите минуту' }
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
 
   // ==================== FIELDS ====================
 
@@ -327,8 +352,8 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   );
 
-  // POST /booking — создать бронь (авторизованный пользователь, не заблокированный)
-  router.post('/', authMiddleware(db), notBlockedMiddleware(db), async (req: AuthRequest, res: Response) => {
+  // POST /booking — создать бронь (авторизованный пользователь, не заблокированный, не превышен лимит)
+  router.post('/', createBookingLimiter, authMiddleware(db), notBlockedMiddleware(db), activeBookingLimitMiddleware(db, 10), async (req: AuthRequest, res: Response) => {
     try {
       const { slot_id, comment, contact_name, contact_phone } = req.body;
       if (!slot_id) {
