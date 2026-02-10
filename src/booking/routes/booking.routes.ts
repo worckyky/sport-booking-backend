@@ -130,6 +130,10 @@ export default function createBookingRoutes(db: Pool): Router {
           res.status(400).json({ error: 'price_per_hour must be a positive number' });
           return;
         }
+        if (slot_duration !== undefined && (typeof slot_duration !== 'number' || slot_duration < 15 || slot_duration > 480)) {
+          res.status(400).json({ error: 'slot_duration must be between 15 and 480 minutes' });
+          return;
+        }
 
         const field = await api.createField({
           campaign_id, name, sport_types, is_indoor, photos, price_per_hour,
@@ -153,6 +157,12 @@ export default function createBookingRoutes(db: Pool): Router {
           name, sport_types, is_indoor, photos, price_per_hour, status,
           slot_duration, working_hours_from, working_hours_to, working_days, working_timetable, client_info
         } = req.body;
+
+        // Валидация slot_duration если передан
+        if (slot_duration !== undefined && (typeof slot_duration !== 'number' || slot_duration < 15 || slot_duration > 480)) {
+          res.status(400).json({ error: 'slot_duration must be between 15 and 480 minutes' });
+          return;
+        }
 
         // Валидация status если передан
         if (status !== undefined) {

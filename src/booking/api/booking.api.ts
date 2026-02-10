@@ -928,8 +928,12 @@ export class BookingAPI {
               COALESCE(b.contact_name, u.name) as user_name,
               COALESCE(b.contact_phone, u.phone) as user_phone
        FROM booking_slots s
-       LEFT JOIN bookings b ON s.id = b.slot_id
-         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+       LEFT JOIN LATERAL (
+         SELECT * FROM bookings
+         WHERE slot_id = s.id
+           AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         ORDER BY created_at DESC LIMIT 1
+       ) b ON true
        LEFT JOIN users u ON b.user_id = u.id
        WHERE s.field_id = $1 AND s.date = $2
        ORDER BY s.start_time`,
@@ -990,8 +994,12 @@ export class BookingAPI {
               COALESCE(b.contact_name, u.name) as user_name,
               COALESCE(b.contact_phone, u.phone) as user_phone
        FROM booking_slots s
-       LEFT JOIN bookings b ON s.id = b.slot_id
-         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+       LEFT JOIN LATERAL (
+         SELECT * FROM bookings
+         WHERE slot_id = s.id
+           AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         ORDER BY created_at DESC LIMIT 1
+       ) b ON true
        LEFT JOIN users u ON b.user_id = u.id
        WHERE s.field_id = $1 AND s.date = $2
        ORDER BY s.start_time`,
@@ -1228,7 +1236,7 @@ export class BookingAPI {
     await this.runAutoStatusUpdates();
 
     const page = pagination?.page || 1;
-    const limit = pagination?.limit || 50;
+    const limit = Math.min(Math.max(pagination?.limit || 50, 1), 100);
     const offset = (page - 1) * limit;
 
     // Get total count
@@ -1871,7 +1879,7 @@ export class BookingAPI {
     await this.runAutoStatusUpdates();
 
     const page = pagination?.page || 1;
-    const limit = pagination?.limit || 50;
+    const limit = Math.min(Math.max(pagination?.limit || 50, 1), 100);
     const offset = (page - 1) * limit;
 
     // Get total count
