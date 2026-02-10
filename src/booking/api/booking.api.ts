@@ -1328,56 +1328,61 @@ export class BookingAPI {
     contactName?: string,
     contactPhone?: string
   ): Promise<Booking> {
-    // Проверяем что слот существует, не заблокирован и свободен
-    // Также получаем данные поля для денормализации
-    const slotQuery = await this.db.query(
-      `SELECT s.id, s.is_blocked, f.name as field_name, f.price_per_hour, f.sport_types
-       FROM booking_slots s
-       JOIN fields f ON s.field_id = f.id
-       WHERE s.id = $1`,
-      [slotId]
-    );
-
-    if (slotQuery.rows.length === 0) {
-      throw new Error('Slot not found');
-    }
-
-    const slot = slotQuery.rows[0];
-
-    if (slot.is_blocked) {
-      throw new Error('Slot is blocked');
-    }
-
-    const existing = await this.db.query(
-      `SELECT id FROM bookings WHERE slot_id = $1
-       AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
-      [slotId]
-    );
-
-    if (existing.rows.length > 0) {
-      throw new Error('Slot already booked');
-    }
-
-    // Нормализуем телефон для единообразия (для будущей связки по телефону)
+    // Нормализуем телефон до транзакции (чистая функция)
     const normalizedPhone = normalizePhone(contactPhone);
-
-    // Для гостевых бронирований (без user_id) требуем контактный телефон
     if (!userId && !normalizedPhone) {
       throw new Error('Contact phone is required for guest bookings');
     }
 
-    // Денормализуем данные поля для статистики
-    const fieldName = slot.field_name;
-    const fieldPrice = slot.price_per_hour;
-    const sportType = slot.sport_types?.[0] || null;
+    return this.withTransaction(async (client) => {
+      // Проверяем что слот существует, не заблокирован и свободен
+      const slotQuery = await client.query(
+        `SELECT s.id, s.is_blocked, f.name as field_name, f.price_per_hour, f.sport_types,
+                c.status as campaign_status
+         FROM booking_slots s
+         JOIN fields f ON s.field_id = f.id
+         JOIN campaign_info c ON f.campaign_id = c.id
+         WHERE s.id = $1`,
+        [slotId]
+      );
 
-    const result = await this.db.query<Booking>(
-      `INSERT INTO bookings (slot_id, user_id, status, comment, contact_name, contact_phone, field_name, field_price, sport_type)
-       VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [slotId, userId, comment ?? null, contactName ?? null, normalizedPhone, fieldName, fieldPrice, sportType]
-    );
-    return result.rows[0];
+      if (slotQuery.rows.length === 0) {
+        throw new Error('Slot not found');
+      }
+
+      const slot = slotQuery.rows[0];
+
+      if (slot.is_blocked) {
+        throw new Error('Slot is blocked');
+      }
+
+      if (slot.campaign_status !== 'published') {
+        throw new Error('Campaign is not available');
+      }
+
+      const existing = await client.query(
+        `SELECT id FROM bookings WHERE slot_id = $1
+         AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
+        [slotId]
+      );
+
+      if (existing.rows.length > 0) {
+        throw new Error('Slot already booked');
+      }
+
+      // Денормализуем данные поля для статистики
+      const fieldName = slot.field_name;
+      const fieldPrice = slot.price_per_hour;
+      const sportType = slot.sport_types?.[0] || null;
+
+      const result = await client.query<Booking>(
+        `INSERT INTO bookings (slot_id, user_id, status, comment, contact_name, contact_phone, field_name, field_price, sport_type)
+         VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8)
+         RETURNING *`,
+        [slotId, userId, comment ?? null, contactName ?? null, normalizedPhone, fieldName, fieldPrice, sportType]
+      );
+      return result.rows[0];
+    });
   }
 
   /**
@@ -1391,53 +1396,61 @@ export class BookingAPI {
     contactPhone: string,
     comment?: string
   ): Promise<Booking> {
-    // Проверяем что слот существует, не заблокирован и свободен
-    const slotQuery = await this.db.query(
-      `SELECT s.id, s.is_blocked, f.name as field_name, f.price_per_hour, f.sport_types
-       FROM booking_slots s
-       JOIN fields f ON s.field_id = f.id
-       WHERE s.id = $1`,
-      [slotId]
-    );
-
-    if (slotQuery.rows.length === 0) {
-      throw new Error('Slot not found');
-    }
-
-    const slot = slotQuery.rows[0];
-
-    if (slot.is_blocked) {
-      throw new Error('Slot is blocked');
-    }
-
-    const existing = await this.db.query(
-      `SELECT id FROM bookings WHERE slot_id = $1
-       AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
-      [slotId]
-    );
-
-    if (existing.rows.length > 0) {
-      throw new Error('Slot already booked');
-    }
-
-    // Нормализуем телефон
+    // Нормализуем телефон до транзакции (чистая функция)
     const normalizedPhone = normalizePhone(contactPhone);
     if (!normalizedPhone) {
       throw new Error('Contact phone is required');
     }
 
-    // Денормализуем данные поля
-    const fieldName = slot.field_name;
-    const fieldPrice = slot.price_per_hour;
-    const sportType = slot.sport_types?.[0] || null;
+    return this.withTransaction(async (client) => {
+      // Проверяем что слот существует, не заблокирован и свободен
+      const slotQuery = await client.query(
+        `SELECT s.id, s.is_blocked, f.name as field_name, f.price_per_hour, f.sport_types,
+                c.status as campaign_status
+         FROM booking_slots s
+         JOIN fields f ON s.field_id = f.id
+         JOIN campaign_info c ON f.campaign_id = c.id
+         WHERE s.id = $1`,
+        [slotId]
+      );
 
-    const result = await this.db.query<Booking>(
-      `INSERT INTO bookings (slot_id, user_id, status, comment, contact_name, contact_phone, field_name, field_price, sport_type)
-       VALUES ($1, NULL, 'confirmed', $2, $3, $4, $5, $6, $7)
-       RETURNING *`,
-      [slotId, comment ?? null, contactName ?? null, normalizedPhone, fieldName, fieldPrice, sportType]
-    );
-    return result.rows[0];
+      if (slotQuery.rows.length === 0) {
+        throw new Error('Slot not found');
+      }
+
+      const slot = slotQuery.rows[0];
+
+      if (slot.is_blocked) {
+        throw new Error('Slot is blocked');
+      }
+
+      if (slot.campaign_status !== 'published') {
+        throw new Error('Campaign is not available');
+      }
+
+      const existing = await client.query(
+        `SELECT id FROM bookings WHERE slot_id = $1
+         AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
+        [slotId]
+      );
+
+      if (existing.rows.length > 0) {
+        throw new Error('Slot already booked');
+      }
+
+      // Денормализуем данные поля
+      const fieldName = slot.field_name;
+      const fieldPrice = slot.price_per_hour;
+      const sportType = slot.sport_types?.[0] || null;
+
+      const result = await client.query<Booking>(
+        `INSERT INTO bookings (slot_id, user_id, status, comment, contact_name, contact_phone, field_name, field_price, sport_type)
+         VALUES ($1, NULL, 'confirmed', $2, $3, $4, $5, $6, $7)
+         RETURNING *`,
+        [slotId, comment ?? null, contactName ?? null, normalizedPhone, fieldName, fieldPrice, sportType]
+      );
+      return result.rows[0];
+    });
   }
 
   /**
@@ -1732,22 +1745,23 @@ export class BookingAPI {
       throw new Error('Cannot reschedule to past slot');
     }
 
-    // 8. Проверяем что новый слот свободен (нет активной брони)
-    const existingBooking = await this.db.query(
-      `SELECT id FROM bookings
-       WHERE slot_id = $1
-       AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
-      [newSlotId]
-    );
-
-    if (existingBooking.rows.length > 0) {
-      throw new Error('New slot is already booked');
-    }
-
-    // 9. Транзакция: запись истории + обновление брони
+    // 8. Транзакция: проверка + запись истории + обновление брони
     const client = await this.db.connect();
     try {
       await client.query('BEGIN');
+
+      // Проверяем что новый слот свободен (нет активной брони) С БЛОКИРОВКОЙ СТРОКИ
+      const existingBooking = await client.query(
+        `SELECT id FROM bookings
+         WHERE slot_id = $1
+         AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         FOR UPDATE`,
+        [newSlotId]
+      );
+
+      if (existingBooking.rows.length > 0) {
+        throw new Error('New slot is already booked');
+      }
 
       // Запись в историю
       await client.query(
