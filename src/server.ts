@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.config';
 import { AuthRoutes } from './authentication/routes/auth.routes';
+import { createInvitationRoutes } from './authentication/routes/invitation.routes';
 import createCampaignRoutes from './campaign/routes/campaign.routes';
 import createBookingRoutes from './booking/routes/booking.routes';
 import { getJwtSecret } from './config/auth';
@@ -58,6 +59,7 @@ async function start(): Promise<void> {
 
   // Initialize routes
   const authRoutes = new AuthRoutes(db);
+  const invitationRoutes = createInvitationRoutes(db);
   const campaignRoutes = createCampaignRoutes(db);
   const bookingRoutes = createBookingRoutes(db);
 
@@ -88,6 +90,7 @@ async function start(): Promise<void> {
 
   // Use routes with rate limiting
   app.use('/auth', authLimiter, authRoutes.getRouter());
+  app.use('/auth', authLimiter, invitationRoutes);
   app.use('/campaign', campaignRoutes);
   app.use('/booking', bookingLimiter, bookingRoutes);
 

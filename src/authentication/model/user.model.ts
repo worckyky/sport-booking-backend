@@ -11,6 +11,7 @@ export interface DbUser {
   email_verified: EMAIL_STATUS;
   is_blocked: boolean;
   campaign_id: string | null;
+  invited_by: string | null;
   created_at: string;
   updated_at: string;
 }
