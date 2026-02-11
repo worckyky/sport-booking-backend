@@ -11,6 +11,7 @@
     "dev:watch": "nodemon --exec ts-node src/server.ts",
     "migrate": "ts-node src/scripts/migrate.ts",
     "seed": "ts-node src/scripts/seed.ts",
+    "seed:demo": "ts-node src/scripts/seed.ts && ts-node scripts/seed-demo-dashboard.ts",
     "docker:up": "docker-compose -f docker-compose-dev.yml up -d",
     "docker:down": "docker-compose -f docker-compose-dev.yml down",
     "docker:restart": "docker-compose -f docker-compose-dev.yml down && docker-compose -f docker-compose-dev.yml up --build -d",
