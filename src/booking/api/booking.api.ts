@@ -18,6 +18,7 @@ import {
 } from '../model/booking.model';
 import { toJsonbValue } from '../../utils/pg';
 import { normalizePhone } from '../../utils/phone';
+import { findOrCreateGuestUserInTransaction } from '../../utils/guest-user';
 
 // Типы для классификации изменений
 type FieldChangeType = 'COSMETIC' | 'BREAK_CHANGE' | 'SCHEDULE_CHANGE';
@@ -1499,11 +1500,14 @@ export class BookingAPI {
       const fieldPrice = slot.price_per_hour;
       const sportType = slot.sport_types?.[0] || null;
 
+      // Найти или создать guest user по телефону
+      const userId = await findOrCreateGuestUserInTransaction(client, contactPhone);
+
       const result = await client.query<Booking>(
         `INSERT INTO bookings (slot_id, user_id, status, comment, contact_name, contact_phone, field_name, field_price, sport_type)
-         VALUES ($1, NULL, 'confirmed', $2, $3, $4, $5, $6, $7)
+         VALUES ($1, $2, 'confirmed', $3, $4, $5, $6, $7, $8)
          RETURNING *`,
-        [slotId, comment ?? null, contactName ?? null, normalizedPhone, fieldName, fieldPrice, sportType]
+        [slotId, userId, comment ?? null, contactName ?? null, normalizedPhone, fieldName, fieldPrice, sportType]
       );
       return result.rows[0];
     });

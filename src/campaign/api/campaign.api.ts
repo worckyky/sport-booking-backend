@@ -877,7 +877,8 @@ export class CampaignAPI {
     const safeLimit = Math.min(Math.max(limit, 1), 100);
     const safeOffset = Math.max(offset, 0);
 
-    // UNION ALL зарегистрированных и гостей с сортировкой и пагинацией в SQL
+    // Единый запрос для всех клиентов (registered + guests)
+    // Гости теперь тоже имеют user_id, отличаются по email/password_hash = NULL
     const result = await this.db.query<{
       id: string;
       name: string | null;
@@ -892,46 +893,23 @@ export class CampaignAPI {
     }>(
       `
         WITH all_clients AS (
-          -- Зарегистрированные пользователи
           SELECT
             u.id::text as id,
-            u.name,
+            COALESCE(u.name, MAX(b.contact_name)) as name,
             u.email,
             u.phone,
             COUNT(DISTINCT b.id) as bookings_count,
             MAX(b.created_at) as last_booking_date,
             MIN(b.created_at) as first_booking_date,
             COALESCE(SUM(f.price_per_hour), 0) as total_spent,
-            true as is_registered
+            (u.email IS NOT NULL AND u.password_hash IS NOT NULL) as is_registered
           FROM users u
           INNER JOIN bookings b ON b.user_id = u.id
           INNER JOIN booking_slots s ON s.id = b.slot_id
           INNER JOIN fields f ON f.id = s.field_id
           WHERE f.campaign_id = $1
             AND b.status IN ('confirmed', 'completed')
-          GROUP BY u.id, u.name, u.email, u.phone
-
-          UNION ALL
-
-          -- Гости (по телефону)
-          SELECT
-            'guest_' || b.contact_phone as id,
-            MAX(b.contact_name) as name,
-            NULL as email,
-            b.contact_phone as phone,
-            COUNT(DISTINCT b.id) as bookings_count,
-            MAX(b.created_at) as last_booking_date,
-            MIN(b.created_at) as first_booking_date,
-            COALESCE(SUM(f.price_per_hour), 0) as total_spent,
-            false as is_registered
-          FROM bookings b
-          INNER JOIN booking_slots s ON s.id = b.slot_id
-          INNER JOIN fields f ON f.id = s.field_id
-          WHERE f.campaign_id = $1
-            AND b.user_id IS NULL
-            AND b.contact_phone IS NOT NULL
-            AND b.status IN ('confirmed', 'completed')
-          GROUP BY b.contact_phone
+          GROUP BY u.id, u.email, u.phone, u.password_hash
         )
         SELECT
           *,
@@ -966,6 +944,7 @@ export class CampaignAPI {
 
   /**
    * Получить клиента по ID (O(1) вместо загрузки всех клиентов)
+   * Единый запрос для registered и guest users
    */
   async getClientById(campaignId: string, clientId: string): Promise<{
     id: string;
@@ -977,76 +956,42 @@ export class CampaignAPI {
     first_booking_date: string | null;
     is_registered: boolean;
   } | null> {
-    // Проверяем, гостевой ли это клиент (id начинается с "guest_")
-    if (clientId.startsWith('guest_')) {
-      const phone = clientId.replace('guest_', '');
-      const result = await this.db.query<{
-        phone: string;
-        name: string;
-        bookings_count: string;
-        last_booking_date: string;
-        first_booking_date: string;
-      }>(
-        `
-          SELECT
-            b.contact_phone as phone,
-            MAX(b.contact_name) as name,
-            COUNT(*)::text as bookings_count,
-            MAX(s.date)::text as last_booking_date,
-            MIN(s.date)::text as first_booking_date
-          FROM bookings b
-          JOIN booking_slots s ON b.slot_id = s.id
-          JOIN fields f ON s.field_id = f.id
-          WHERE f.campaign_id = $1
-            AND b.user_id IS NULL
-            AND b.contact_phone = $2
-          GROUP BY b.contact_phone
-        `,
-        [campaignId, phone]
-      );
-
-      if (result.rowCount === 0) return null;
-
-      const row = result.rows[0];
-      return {
-        id: clientId,
-        name: row.name,
-        email: null,
-        phone: row.phone,
-        bookings_count: parseInt(row.bookings_count, 10),
-        last_booking_date: row.last_booking_date,
-        first_booking_date: row.first_booking_date,
-        is_registered: false,
-      };
+    // Проверка на валидный UUID (больше не поддерживаем 'guest_*' формат)
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(clientId)) {
+      return null;
     }
 
-    // Зарегистрированный пользователь
     const result = await this.db.query<{
       id: string;
-      name: string;
-      email: string;
-      phone: string;
+      name: string | null;
+      email: string | null;
+      phone: string | null;
       bookings_count: string;
-      last_booking_date: string;
-      first_booking_date: string;
+      last_booking_date: string | null;
+      first_booking_date: string | null;
+      is_registered: boolean;
     }>(
       `
         SELECT
-          u.id,
-          u.name,
+          u.id::text as id,
+          COALESCE(u.name, MAX(b.contact_name)) as name,
           u.email,
           u.phone,
-          COUNT(b.id)::text as bookings_count,
-          MAX(s.date)::text as last_booking_date,
-          MIN(s.date)::text as first_booking_date
+          COUNT(DISTINCT b.id)::text as bookings_count,
+          MAX(b.created_at) as last_booking_date,
+          MIN(b.created_at) as first_booking_date,
+          (u.email IS NOT NULL AND u.password_hash IS NOT NULL) as is_registered
         FROM users u
-        JOIN bookings b ON b.user_id = u.id
-        JOIN booking_slots s ON b.slot_id = s.id
-        JOIN fields f ON s.field_id = f.id
-        WHERE f.campaign_id = $1 AND u.id = $2
-        GROUP BY u.id
+        INNER JOIN bookings b ON b.user_id = u.id
+        INNER JOIN booking_slots s ON s.id = b.slot_id
+        INNER JOIN fields f ON f.id = s.field_id
+        WHERE u.id = $1
+          AND f.campaign_id = $2
+          AND b.status IN ('confirmed', 'completed')
+        GROUP BY u.id, u.email, u.phone, u.password_hash
       `,
-      [campaignId, clientId]
+      [clientId, campaignId]
     );
 
     if (result.rowCount === 0) return null;
@@ -1060,7 +1005,32 @@ export class CampaignAPI {
       bookings_count: parseInt(row.bookings_count, 10),
       last_booking_date: row.last_booking_date,
       first_booking_date: row.first_booking_date,
-      is_registered: true,
+      is_registered: row.is_registered,
+    };
+  }
+
+  /**
+   * Получить статистику платформы для landing page trust badges
+   */
+  async getPlatformStats(): Promise<{ campaigns: number; bookings: number; rating: number }> {
+    // Параллельные запросы для производительности
+    const [campaignsResult, bookingsResult] = await Promise.all([
+      this.db.query<{ count: string }>(
+        `SELECT COUNT(*) as count
+         FROM campaign_info
+         WHERE status = 'published'`
+      ),
+      this.db.query<{ count: string }>(
+        `SELECT COUNT(*) as count
+         FROM bookings
+         WHERE status IN ('completed', 'confirmed')`
+      ),
+    ]);
+
+    return {
+      campaigns: parseInt(campaignsResult.rows[0].count, 10),
+      bookings: parseInt(bookingsResult.rows[0].count, 10),
+      rating: 4.8, // Хардкод до реализации reviews
     };
   }
 }

@@ -43,6 +43,24 @@ router.get(
   }
 );
 
+// GET /campaign/stats/platform - Статистика платформы для landing (публичный)
+router.get(
+  '/stats/platform',
+  async (_req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const stats = await campaignAPI.getPlatformStats();
+      res.json(stats);
+    } catch (error) {
+      if (error instanceof Error) {
+        res.status(500).json({ error: error.message });
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
+
 // GET /campaign/admin/all - Получить все кампании (только ADMIN)
 router.get(
   '/admin/all',
@@ -551,6 +569,8 @@ router.get(
     }
   }
 );
+
+
 
   return router;
 }
