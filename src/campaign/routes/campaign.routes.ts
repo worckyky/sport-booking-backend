@@ -6,6 +6,7 @@ import { adminMiddleware } from '../../authentication/middleware/admin.middlewar
 import { campaignRoleMiddleware } from '../middleware/campaign.middleware';
 import { CampaignStatus, CreateCampaignRequest, UpdateCampaignRequest } from '../model/campaign.model';
 import { AuditAPI, AUDIT_EVENTS } from '../../audit/audit.api';
+import { validatePaymentMethods, validateFacilities, validateWorkingTimetable, validateTimezoneId } from '../../utils/validators';
 
 export default function createCampaignRoutes(db: Pool): Router {
   const router = Router();
@@ -101,10 +102,33 @@ router.post(
       }
 
       const campaignData: CreateCampaignRequest = req.body;
+      const requestData = req.body as Record<string, unknown>;
 
       if (!campaignData.name || !campaignData.description) {
         res.status(400).json({ error: 'Name and description are required' });
         return;
+      }
+
+      // Валидация enum'ов и форматов
+      const paymentMethods = campaignData.paymentMethods ?? requestData.payment_methods;
+      if (paymentMethods) {
+        const err = validatePaymentMethods(paymentMethods);
+        if (err) { res.status(400).json({ error: err }); return; }
+      }
+      const facilities = campaignData.facilities;
+      if (facilities) {
+        const err = validateFacilities(facilities);
+        if (err) { res.status(400).json({ error: err }); return; }
+      }
+      const timetable = campaignData.workingTimetable ?? requestData.working_timetable;
+      if (timetable) {
+        const err = validateWorkingTimetable(timetable);
+        if (err) { res.status(400).json({ error: err }); return; }
+      }
+      const timezoneId = campaignData.timezoneId ?? requestData.timezone_id;
+      if (timezoneId) {
+        const err = validateTimezoneId(timezoneId);
+        if (err) { res.status(400).json({ error: err }); return; }
       }
 
       const campaign = await campaignAPI.createCampaign(req.userId, campaignData);
@@ -139,10 +163,33 @@ router.put(
       }
 
       const campaignData: UpdateCampaignRequest = req.body;
+      const requestData = req.body as Record<string, unknown>;
 
       if (Object.keys(campaignData).length === 0) {
         res.status(400).json({ error: 'No data provided for update' });
         return;
+      }
+
+      // Валидация enum'ов и форматов
+      const paymentMethods = campaignData.paymentMethods ?? requestData.payment_methods;
+      if (paymentMethods !== undefined) {
+        const err = validatePaymentMethods(paymentMethods);
+        if (err) { res.status(400).json({ error: err }); return; }
+      }
+      const facilities = campaignData.facilities;
+      if (facilities !== undefined) {
+        const err = validateFacilities(facilities);
+        if (err) { res.status(400).json({ error: err }); return; }
+      }
+      const timetable = campaignData.workingTimetable ?? requestData.working_timetable;
+      if (timetable !== undefined) {
+        const err = validateWorkingTimetable(timetable);
+        if (err) { res.status(400).json({ error: err }); return; }
+      }
+      const timezoneId = campaignData.timezoneId ?? requestData.timezone_id;
+      if (timezoneId !== undefined) {
+        const err = validateTimezoneId(timezoneId);
+        if (err) { res.status(400).json({ error: err }); return; }
       }
 
       const campaign = await campaignAPI.updateCampaign(campaignId, req.userId, campaignData);
@@ -182,8 +229,10 @@ router.delete(
 
       await campaignAPI.deleteCampaign(campaignId, req.userId);
       res.status(204).send();
-    } catch (error) {
-      if (error instanceof Error) {
+    } catch (error: any) {
+      if (error.statusCode === 409) {
+        res.status(409).json({ error: error.message });
+      } else if (error instanceof Error) {
         res.status(400).json({ error: error.message });
       } else {
         res.status(500).json({ error: 'Internal server error' });
@@ -213,8 +262,12 @@ router.get(
         return;
       }
 
-      const clients = await campaignAPI.getClients(campaignId);
-      res.json(clients);
+      // Пагинация: limit (по умолчанию 100, макс 100), offset (по умолчанию 0)
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
+      const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+
+      const result = await campaignAPI.getClients(campaignId, limit, offset);
+      res.json(result);
     } catch (error) {
       if (error instanceof Error) {
         if (error.message === 'Campaign not found') {

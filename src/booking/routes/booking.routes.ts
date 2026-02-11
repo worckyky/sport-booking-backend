@@ -18,6 +18,7 @@ import {
 import { campaignRoleMiddleware } from '../../campaign/middleware/campaign.middleware';
 import { isValidUUID } from '../../utils/uuid';
 import { Errors, ErrorCode, handleError, sendError } from '../../utils/errors';
+import { validateSportTypes } from '../../utils/validators';
 
 export default function createBookingRoutes(db: Pool): Router {
   const router = Router();
@@ -120,8 +121,9 @@ export default function createBookingRoutes(db: Pool): Router {
           res.status(400).json({ error: 'campaign_id and name are required' });
           return;
         }
-        if (!sport_types || !Array.isArray(sport_types) || sport_types.length === 0) {
-          res.status(400).json({ error: 'sport_types array is required' });
+        const sportErr = validateSportTypes(sport_types);
+        if (sportErr) {
+          res.status(400).json({ error: sportErr });
           return;
         }
         if (typeof is_indoor !== 'boolean') {
@@ -132,12 +134,19 @@ export default function createBookingRoutes(db: Pool): Router {
           res.status(400).json({ error: 'At least one photo is required' });
           return;
         }
-        if (typeof price_per_hour !== 'number' || price_per_hour <= 0) {
-          res.status(400).json({ error: 'price_per_hour must be a positive number' });
+        if (typeof price_per_hour !== 'number' || price_per_hour <= 0 || price_per_hour > 100000) {
+          res.status(400).json({ error: 'price_per_hour must be between 1 and 100000' });
           return;
         }
         if (slot_duration !== undefined && (typeof slot_duration !== 'number' || slot_duration < 15 || slot_duration > 480)) {
           res.status(400).json({ error: 'slot_duration must be between 15 and 480 minutes' });
+          return;
+        }
+
+        // Проверка лимита полей на площадку (VAL-08)
+        const existingFields = await api.getFieldsByCampaign(campaign_id);
+        if (existingFields.length >= 50) {
+          res.status(400).json({ error: 'Maximum 50 fields per campaign' });
           return;
         }
 
@@ -163,6 +172,21 @@ export default function createBookingRoutes(db: Pool): Router {
           name, sport_types, is_indoor, photos, price_per_hour, status,
           slot_duration, working_hours_from, working_hours_to, working_days, working_timetable, client_info
         } = req.body;
+
+        // Валидация sport_types если передан
+        if (sport_types !== undefined) {
+          const sportErr = validateSportTypes(sport_types);
+          if (sportErr) {
+            res.status(400).json({ error: sportErr });
+            return;
+          }
+        }
+
+        // Валидация price_per_hour если передан
+        if (price_per_hour !== undefined && (typeof price_per_hour !== 'number' || price_per_hour <= 0 || price_per_hour > 100000)) {
+          res.status(400).json({ error: 'price_per_hour must be between 1 and 100000' });
+          return;
+        }
 
         // Валидация slot_duration если передан
         if (slot_duration !== undefined && (typeof slot_duration !== 'number' || slot_duration < 15 || slot_duration > 480)) {
@@ -307,8 +331,8 @@ export default function createBookingRoutes(db: Pool): Router {
         }
         res.json(slot);
       } catch (error) {
-        if ((error as Error).message.includes('pending booking')) {
-          res.status(409).json({ error: 'Cannot block slot with pending booking' });
+        if ((error as Error).message.includes('active booking')) {
+          res.status(409).json({ error: 'Cannot block slot with active booking' });
         } else {
           res.status(400).json({ error: (error as Error).message });
         }

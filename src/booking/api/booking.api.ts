@@ -469,10 +469,12 @@ export class BookingAPI {
               COALESCE(b.contact_name, u.name) as user_name, b.contact_name
        FROM bookings b
        JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        LEFT JOIN users u ON b.user_id = u.id
        WHERE s.field_id = $1
          AND b.status IN ('pending', 'confirmed')
-         AND s.date >= CURRENT_DATE
+         AND s.date >= (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
        ORDER BY s.date, s.start_time`,
       [fieldId]
     );
@@ -560,10 +562,12 @@ export class BookingAPI {
               b.contact_phone, u.phone as user_phone
        FROM bookings b
        JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        LEFT JOIN users u ON b.user_id = u.id
        WHERE s.field_id = $1
          AND b.status IN ('pending', 'confirmed')
-         AND s.date >= CURRENT_DATE
+         AND s.date >= (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
        ORDER BY s.date, s.start_time`,
       [fieldId]
     );
@@ -589,10 +593,12 @@ export class BookingAPI {
     const result = await this.db.query<{ id: string; date: Date; start_time: string; end_time: string }>(
       `SELECT s.id, s.date, s.start_time, s.end_time
        FROM booking_slots s
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        LEFT JOIN bookings b ON s.id = b.slot_id
          AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
        WHERE s.field_id = $1
-         AND s.date >= CURRENT_DATE
+         AND s.date >= (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
          AND b.id IS NULL
          AND s.is_blocked = false`,
       [fieldId]
@@ -1144,14 +1150,14 @@ export class BookingAPI {
   }
 
   async blockSlot(slotId: string, reason?: string): Promise<BookingSlot | null> {
-    // Проверяем нет ли pending брони
-    const pendingBooking = await this.db.query(
-      `SELECT id FROM bookings WHERE slot_id = $1 AND status = 'pending'`,
+    // Проверяем нет ли активной брони (pending или confirmed)
+    const activeBooking = await this.db.query(
+      `SELECT id FROM bookings WHERE slot_id = $1 AND status IN ('pending', 'confirmed')`,
       [slotId]
     );
 
-    if (pendingBooking.rows.length > 0) {
-      throw new Error('Cannot block slot with pending booking');
+    if (activeBooking.rows.length > 0) {
+      throw new Error('Cannot block slot with active booking');
     }
 
     const result = await this.db.query<BookingSlot>(
@@ -1372,9 +1378,13 @@ export class BookingAPI {
       // Проверяем что слот существует, не заблокирован и свободен
       const slotQuery = await client.query(
         `SELECT s.id, s.is_blocked, f.name as field_name, f.price_per_hour, f.sport_types,
-                c.status as campaign_status
+                c.status as campaign_status, c.timezone_id,
+                (s.date < (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+                 OR (s.date = (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+                     AND s.start_time <= (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::time)
+                ) as slot_in_past
          FROM booking_slots s
-         JOIN fields f ON s.field_id = f.id
+         JOIN fields f ON s.field_id = f.id AND f.deleted_at IS NULL
          JOIN campaign_info c ON f.campaign_id = c.id
          WHERE s.id = $1`,
         [slotId]
@@ -1392,6 +1402,10 @@ export class BookingAPI {
 
       if (slot.campaign_status !== 'published') {
         throw new Error('Campaign is not available');
+      }
+
+      if (slot.slot_in_past) {
+        throw new Error('Cannot book past slots');
       }
 
       const existing = await client.query(
@@ -1440,9 +1454,13 @@ export class BookingAPI {
       // Проверяем что слот существует, не заблокирован и свободен
       const slotQuery = await client.query(
         `SELECT s.id, s.is_blocked, f.name as field_name, f.price_per_hour, f.sport_types,
-                c.status as campaign_status
+                c.status as campaign_status, c.timezone_id,
+                (s.date < (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+                 OR (s.date = (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+                     AND s.start_time <= (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::time)
+                ) as slot_in_past
          FROM booking_slots s
-         JOIN fields f ON s.field_id = f.id
+         JOIN fields f ON s.field_id = f.id AND f.deleted_at IS NULL
          JOIN campaign_info c ON f.campaign_id = c.id
          WHERE s.id = $1`,
         [slotId]
@@ -1460,6 +1478,10 @@ export class BookingAPI {
 
       if (slot.campaign_status !== 'published') {
         throw new Error('Campaign is not available');
+      }
+
+      if (slot.slot_in_past) {
+        throw new Error('Cannot book past slots');
       }
 
       const existing = await client.query(
@@ -1588,23 +1610,30 @@ export class BookingAPI {
     bookingIds: string[],
     newStatus: BookingStatus
   ): Promise<{ updated: number; failed: string[] }> {
-    const updated: string[] = [];
-    const failed: string[] = [];
+    return this.withTransaction(async (client) => {
+      const updated: string[] = [];
+      const failed: string[] = [];
 
-    for (const bookingId of bookingIds) {
-      try {
-        const result = await this.updateBookingStatus(bookingId, newStatus);
-        if (result) {
-          updated.push(bookingId);
-        } else {
+      for (const bookingId of bookingIds) {
+        try {
+          const result = await client.query(
+            `UPDATE bookings SET status = $1 WHERE id = $2
+             AND status NOT IN ('completed', 'no_show', 'cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin')
+             RETURNING id`,
+            [newStatus, bookingId]
+          );
+          if (result.rowCount && result.rowCount > 0) {
+            updated.push(bookingId);
+          } else {
+            failed.push(bookingId);
+          }
+        } catch {
           failed.push(bookingId);
         }
-      } catch {
-        failed.push(bookingId);
       }
-    }
 
-    return { updated: updated.length, failed };
+      return { updated: updated.length, failed };
+    });
   }
 
   async cancelBooking(bookingId: string, userId: string): Promise<boolean> {
@@ -1742,7 +1771,7 @@ export class BookingAPI {
               f.name as field_name, f.price_per_hour as field_price, f.sport_types,
               f.campaign_id as new_campaign_id
        FROM booking_slots s
-       JOIN fields f ON s.field_id = f.id
+       JOIN fields f ON s.field_id = f.id AND f.deleted_at IS NULL
        WHERE s.id = $1`,
       [newSlotId]
     );

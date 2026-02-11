@@ -11,6 +11,7 @@ import {
   type ReadinessResponse
 } from '../model/campaign.model';
 import { normalizeEnumArray, normalizeJsonArray, toJsonbValue } from '../../utils/pg';
+import { withTransaction } from '../../utils/db-transaction';
 
 export class CampaignAPI {
   constructor(private db: Pool) {}
@@ -43,7 +44,13 @@ export class CampaignAPI {
   }
 
   async getAllCampaigns(): Promise<CampaignResponse[]> {
-    const { rows } = await this.db.query<Campaign>('select * from campaign_info');
+    // Публичный каталог — только published площадки, макс 1000 записей
+    const { rows } = await this.db.query<Campaign>(
+      `SELECT * FROM campaign_info
+       WHERE status = 'published'
+       ORDER BY created_at DESC
+       LIMIT 1000`
+    );
     const results: CampaignResponse[] = [];
     for (const campaign of rows) {
       const sports = await this.getSportsByCampaignId(campaign.id);
@@ -164,9 +171,11 @@ export class CampaignAPI {
     oldStatus: string | null,
     newStatus: string,
     changedBy: string,
-    reason?: string
+    reason?: string,
+    client?: any
   ): Promise<void> {
-    await this.db.query(
+    const db = client || this.db;
+    await db.query(
       `INSERT INTO campaign_status_log (campaign_id, old_status, new_status, changed_by, reason)
        VALUES ($1, $2, $3, $4, $5)`,
       [campaignId, oldStatus, newStatus, changedBy, reason ?? null]
@@ -343,6 +352,25 @@ export class CampaignAPI {
   }
 
   async deleteCampaign(campaignId: string, userId: string): Promise<void> {
+    // Проверяем наличие активных бронирований
+    const activeBookings = await this.db.query(
+      `SELECT COUNT(*)::int as count
+       FROM bookings b
+       JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       WHERE f.campaign_id = $1
+         AND b.status IN ('pending', 'confirmed')`,
+      [campaignId]
+    );
+
+    if (activeBookings.rows[0]?.count > 0) {
+      const err: any = new Error(
+        `Невозможно удалить площадку с активными бронированиями (${activeBookings.rows[0].count}). Отмените или завершите их.`
+      );
+      err.statusCode = 409;
+      throw err;
+    }
+
     const result = await this.db.query('delete from campaign_info where id = $1 and user_id = $2', [
       campaignId,
       userId
@@ -359,69 +387,73 @@ export class CampaignAPI {
     changedBy: string,
     comment?: string
   ): Promise<CampaignResponse> {
-    // Get old status for audit log
-    const oldResult = await this.db.query<{ status: string }>(
-      'SELECT status FROM campaign_info WHERE id = $1',
-      [campaignId]
-    );
-    if (oldResult.rowCount === 0) throw new Error('Campaign not found');
-    const oldStatus = oldResult.rows[0].status;
+    const updated = await withTransaction(this.db, async (client) => {
+      // Get old status for audit log
+      const oldResult = await client.query<{ status: string }>(
+        'SELECT status FROM campaign_info WHERE id = $1',
+        [campaignId]
+      );
+      if (oldResult.rowCount === 0) throw new Error('Campaign not found');
+      const oldStatus = oldResult.rows[0].status;
 
-    const now = new Date().toISOString();
+      const now = new Date().toISOString();
 
-    // При отклонении (draft) — сохранить комментарий
-    // При публикации — очистить комментарий
-    let moderationComment: string | null = null;
-    let moderationAt: string | null = null;
+      // При отклонении (draft) — сохранить комментарий
+      // При публикации — очистить комментарий
+      let moderationComment: string | null = null;
+      let moderationAt: string | null = null;
 
-    if (status === CampaignStatus.DRAFT && comment) {
-      moderationComment = comment;
-      moderationAt = now;
-    }
+      if (status === CampaignStatus.DRAFT && comment) {
+        moderationComment = comment;
+        moderationAt = now;
+      }
 
-    // При suspend/reject/published — очистить pending_changes
-    const clearPending = status === CampaignStatus.SUSPENDED
-      || status === CampaignStatus.DRAFT
-      || status === CampaignStatus.PUBLISHED;
+      // При suspend/reject/published — очистить pending_changes
+      const clearPending = status === CampaignStatus.SUSPENDED
+        || status === CampaignStatus.DRAFT
+        || status === CampaignStatus.PUBLISHED;
 
-    let query: string;
-    let params: unknown[];
+      let query: string;
+      let params: unknown[];
 
-    if (status === CampaignStatus.DRAFT || status === CampaignStatus.PUBLISHED || status === CampaignStatus.PENDING) {
-      query = `
-        UPDATE campaign_info
-        SET status = $1, moderation_comment = $2, moderation_at = $3,
-            ${clearPending ? 'pending_changes = NULL,' : ''} updated_at = $4
-        WHERE id = $5
-        RETURNING *
-      `;
-      params = [status, moderationComment, moderationAt, now, campaignId];
-    } else {
-      query = `
-        UPDATE campaign_info
-        SET status = $1, ${clearPending ? 'pending_changes = NULL,' : ''} updated_at = $2
-        WHERE id = $3
-        RETURNING *
-      `;
-      params = [status, now, campaignId];
-    }
+      if (status === CampaignStatus.DRAFT || status === CampaignStatus.PUBLISHED || status === CampaignStatus.PENDING) {
+        query = `
+          UPDATE campaign_info
+          SET status = $1, moderation_comment = $2, moderation_at = $3,
+              ${clearPending ? 'pending_changes = NULL,' : ''} updated_at = $4
+          WHERE id = $5
+          RETURNING *
+        `;
+        params = [status, moderationComment, moderationAt, now, campaignId];
+      } else {
+        query = `
+          UPDATE campaign_info
+          SET status = $1, ${clearPending ? 'pending_changes = NULL,' : ''} updated_at = $2
+          WHERE id = $3
+          RETURNING *
+        `;
+        params = [status, now, campaignId];
+      }
 
-    const updated = await this.db.query<Campaign>(query, params);
+      const updatedResult = await client.query<Campaign>(query, params);
 
-    if (updated.rowCount === 0) {
-      throw new Error('Campaign not found');
-    }
+      if (updatedResult.rowCount === 0) {
+        throw new Error('Campaign not found');
+      }
 
-    // Audit log
-    const reason = status === CampaignStatus.PUBLISHED ? 'Approved'
-      : status === CampaignStatus.SUSPENDED ? `Suspended${comment ? ': ' + comment : ''}`
-      : status === CampaignStatus.DRAFT && comment ? `Rejected: ${comment}`
-      : status === CampaignStatus.PENDING ? 'Submitted for moderation'
-      : undefined;
-    await this.logStatusChange(campaignId, oldStatus, status, changedBy, reason);
+      // Audit log
+      const reason = status === CampaignStatus.PUBLISHED ? 'Approved'
+        : status === CampaignStatus.SUSPENDED ? `Suspended${comment ? ': ' + comment : ''}`
+        : status === CampaignStatus.DRAFT && comment ? `Rejected: ${comment}`
+        : status === CampaignStatus.PENDING ? 'Submitted for moderation'
+        : undefined;
+      await this.logStatusChange(campaignId, oldStatus, status, changedBy, reason, client);
+
+      return updatedResult.rows[0];
+    });
 
     const sports = await this.getSportsByCampaignId(campaignId);
-    return this.mapCampaignToResponse(updated.rows[0], sports);
+    return this.mapCampaignToResponse(updated, sports);
   }
 
   /**
@@ -823,81 +855,12 @@ export class CampaignAPI {
     };
   }
 
-  async getClients(campaignId: string): Promise<{
-    id: string;
-    name: string | null;
-    email: string | null;
-    phone: string | null;
-    bookings_count: number;
-    last_booking_date: string | null;
-    first_booking_date: string | null;
-    total_spent: number;
-    is_registered: boolean;
-  }[]> {
-    // Registered users who booked
-    const registeredQuery = this.db.query<{
-      id: string;
-      name: string | null;
-      email: string | null;
-      phone: string | null;
-      bookings_count: string;
-      last_booking_date: string | null;
-      first_booking_date: string | null;
-      total_spent: string;
-    }>(
-      `
-        SELECT
-          u.id,
-          u.name,
-          u.email,
-          u.phone,
-          COUNT(DISTINCT b.id)::text as bookings_count,
-          MAX(b.created_at) as last_booking_date,
-          MIN(b.created_at) as first_booking_date,
-          COALESCE(SUM(f.price_per_hour), 0)::text as total_spent
-        FROM users u
-        INNER JOIN bookings b ON b.user_id = u.id
-        INNER JOIN booking_slots s ON s.id = b.slot_id
-        INNER JOIN fields f ON f.id = s.field_id
-        WHERE f.campaign_id = $1
-          AND b.status IN ('confirmed', 'completed')
-        GROUP BY u.id, u.name, u.email, u.phone
-      `,
-      [campaignId]
-    );
-
-    // Guest bookings (no user_id, identified by contact_phone)
-    const guestQuery = this.db.query<{
-      phone: string;
-      name: string | null;
-      bookings_count: string;
-      last_booking_date: string | null;
-      first_booking_date: string | null;
-      total_spent: string;
-    }>(
-      `
-        SELECT
-          b.contact_phone as phone,
-          MAX(b.contact_name) as name,
-          COUNT(DISTINCT b.id)::text as bookings_count,
-          MAX(b.created_at) as last_booking_date,
-          MIN(b.created_at) as first_booking_date,
-          COALESCE(SUM(f.price_per_hour), 0)::text as total_spent
-        FROM bookings b
-        INNER JOIN booking_slots s ON s.id = b.slot_id
-        INNER JOIN fields f ON f.id = s.field_id
-        WHERE f.campaign_id = $1
-          AND b.user_id IS NULL
-          AND b.contact_phone IS NOT NULL
-          AND b.status IN ('confirmed', 'completed')
-        GROUP BY b.contact_phone
-      `,
-      [campaignId]
-    );
-
-    const [registeredResult, guestResult] = await Promise.all([registeredQuery, guestQuery]);
-
-    const clients: {
+  async getClients(
+    campaignId: string,
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<{
+    clients: {
       id: string;
       name: string | null;
       email: string | null;
@@ -907,46 +870,98 @@ export class CampaignAPI {
       first_booking_date: string | null;
       total_spent: number;
       is_registered: boolean;
-    }[] = [];
+    }[];
+    total: number;
+  }> {
+    // Валидация параметров
+    const safeLimit = Math.min(Math.max(limit, 1), 100);
+    const safeOffset = Math.max(offset, 0);
 
-    // Add registered users
-    for (const row of registeredResult.rows) {
-      clients.push({
-        id: row.id,
-        name: row.name,
-        email: row.email,
-        phone: row.phone,
-        bookings_count: parseInt(row.bookings_count, 10),
-        last_booking_date: row.last_booking_date,
-        first_booking_date: row.first_booking_date,
-        total_spent: parseFloat(row.total_spent),
-        is_registered: true,
-      });
-    }
+    // UNION ALL зарегистрированных и гостей с сортировкой и пагинацией в SQL
+    const result = await this.db.query<{
+      id: string;
+      name: string | null;
+      email: string | null;
+      phone: string | null;
+      bookings_count: string;
+      last_booking_date: string | null;
+      first_booking_date: string | null;
+      total_spent: string;
+      is_registered: boolean;
+      total_count: string;
+    }>(
+      `
+        WITH all_clients AS (
+          -- Зарегистрированные пользователи
+          SELECT
+            u.id::text as id,
+            u.name,
+            u.email,
+            u.phone,
+            COUNT(DISTINCT b.id) as bookings_count,
+            MAX(b.created_at) as last_booking_date,
+            MIN(b.created_at) as first_booking_date,
+            COALESCE(SUM(f.price_per_hour), 0) as total_spent,
+            true as is_registered
+          FROM users u
+          INNER JOIN bookings b ON b.user_id = u.id
+          INNER JOIN booking_slots s ON s.id = b.slot_id
+          INNER JOIN fields f ON f.id = s.field_id
+          WHERE f.campaign_id = $1
+            AND b.status IN ('confirmed', 'completed')
+          GROUP BY u.id, u.name, u.email, u.phone
 
-    // Add guests (use phone as id with prefix)
-    for (const row of guestResult.rows) {
-      clients.push({
-        id: `guest_${row.phone}`,
-        name: row.name,
-        email: null,
-        phone: row.phone,
-        bookings_count: parseInt(row.bookings_count, 10),
-        last_booking_date: row.last_booking_date,
-        first_booking_date: row.first_booking_date,
-        total_spent: parseFloat(row.total_spent),
-        is_registered: false,
-      });
-    }
+          UNION ALL
 
-    // Sort by last_booking_date desc
-    clients.sort((a, b) => {
-      if (!a.last_booking_date) return 1;
-      if (!b.last_booking_date) return -1;
-      return new Date(b.last_booking_date).getTime() - new Date(a.last_booking_date).getTime();
-    });
+          -- Гости (по телефону)
+          SELECT
+            'guest_' || b.contact_phone as id,
+            MAX(b.contact_name) as name,
+            NULL as email,
+            b.contact_phone as phone,
+            COUNT(DISTINCT b.id) as bookings_count,
+            MAX(b.created_at) as last_booking_date,
+            MIN(b.created_at) as first_booking_date,
+            COALESCE(SUM(f.price_per_hour), 0) as total_spent,
+            false as is_registered
+          FROM bookings b
+          INNER JOIN booking_slots s ON s.id = b.slot_id
+          INNER JOIN fields f ON f.id = s.field_id
+          WHERE f.campaign_id = $1
+            AND b.user_id IS NULL
+            AND b.contact_phone IS NOT NULL
+            AND b.status IN ('confirmed', 'completed')
+          GROUP BY b.contact_phone
+        )
+        SELECT
+          *,
+          COUNT(*) OVER() as total_count
+        FROM all_clients
+        ORDER BY last_booking_date DESC NULLS LAST
+        LIMIT $2 OFFSET $3
+      `,
+      [campaignId, safeLimit, safeOffset]
+    );
 
-    return clients;
+    const total = result.rows.length > 0 ? parseInt(result.rows[0].total_count, 10) : 0;
+
+    const clients = result.rows.map(row => ({
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      phone: row.phone,
+      bookings_count: typeof row.bookings_count === 'string'
+        ? parseInt(row.bookings_count, 10)
+        : row.bookings_count,
+      last_booking_date: row.last_booking_date,
+      first_booking_date: row.first_booking_date,
+      total_spent: typeof row.total_spent === 'string'
+        ? parseFloat(row.total_spent)
+        : row.total_spent,
+      is_registered: row.is_registered,
+    }));
+
+    return { clients, total };
   }
 
   /**
