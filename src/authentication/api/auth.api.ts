@@ -28,6 +28,10 @@ export class AuthAPI {
       throw new Error('Invalid email or password');
     }
 
+    if (user.is_blocked) {
+      throw new Error('Account is blocked');
+    }
+
     const ok = await bcrypt.compare(credentials.password, user.password_hash);
     if (!ok) {
       throw new Error('Invalid email or password');
@@ -207,11 +211,18 @@ export class AuthAPI {
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 час
 
+    // Инвалидируем все старые токены для этого пользователя
     await this.db.query(
-      `
-        insert into password_reset_tokens (id, user_id, token_hash, expires_at, used_at, created_at)
-        values ($1, $2, $3, $4, null, now())
-      `,
+      `UPDATE password_reset_tokens
+       SET used_at = NOW()
+       WHERE user_id = $1 AND used_at IS NULL`,
+      [user.rows[0].id]
+    );
+
+    // Создаём новый токен
+    await this.db.query(
+      `INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at, used_at, created_at)
+       VALUES ($1, $2, $3, $4, null, NOW())`,
       [crypto.randomUUID(), user.rows[0].id, tokenHash, expiresAt]
     );
 

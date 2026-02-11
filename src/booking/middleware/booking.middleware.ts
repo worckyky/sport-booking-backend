@@ -115,21 +115,18 @@ export const fieldOwnerMiddleware = (db: Pool) => {
         return;
       }
 
-      const result = await db.query<{ user_id: string }>(
-        `SELECT c.user_id
-         FROM fields f
-         JOIN campaign_info c ON f.campaign_id = c.id
-         WHERE f.id = $1`,
-        [fieldId]
+      const result = await db.query<{ has_access: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM fields f
+           JOIN campaign_info c ON f.campaign_id = c.id
+           JOIN users u ON u.campaign_id = c.id
+           WHERE f.id = $1 AND u.id = $2
+         ) as has_access`,
+        [fieldId, req.userId]
       );
 
-      if (result.rows.length === 0) {
-        res.status(404).json({ error: 'Field not found' });
-        return;
-      }
-
-      if (result.rows[0].user_id !== req.userId) {
-        res.status(403).json({ error: 'Forbidden - Not the owner of this field' });
+      if (!result.rows[0]?.has_access) {
+        res.status(403).json({ error: 'Forbidden - Not a member of this campaign' });
         return;
       }
 
@@ -156,22 +153,19 @@ export const slotOwnerMiddleware = (db: Pool) => {
         return;
       }
 
-      const result = await db.query<{ user_id: string }>(
-        `SELECT c.user_id
-         FROM booking_slots s
-         JOIN fields f ON s.field_id = f.id
-         JOIN campaign_info c ON f.campaign_id = c.id
-         WHERE s.id = $1`,
-        [slotId]
+      const result = await db.query<{ has_access: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM booking_slots s
+           JOIN fields f ON s.field_id = f.id
+           JOIN campaign_info c ON f.campaign_id = c.id
+           JOIN users u ON u.campaign_id = c.id
+           WHERE s.id = $1 AND u.id = $2
+         ) as has_access`,
+        [slotId, req.userId]
       );
 
-      if (result.rows.length === 0) {
-        res.status(404).json({ error: 'Slot not found' });
-        return;
-      }
-
-      if (result.rows[0].user_id !== req.userId) {
-        res.status(403).json({ error: 'Forbidden - Not the owner of this slot' });
+      if (!result.rows[0]?.has_access) {
+        res.status(403).json({ error: 'Forbidden - Not a member of this campaign' });
         return;
       }
 
@@ -198,23 +192,20 @@ export const bookingCampaignOwnerMiddleware = (db: Pool) => {
         return;
       }
 
-      const result = await db.query<{ user_id: string }>(
-        `SELECT c.user_id
-         FROM bookings b
-         JOIN booking_slots s ON b.slot_id = s.id
-         JOIN fields f ON s.field_id = f.id
-         JOIN campaign_info c ON f.campaign_id = c.id
-         WHERE b.id = $1`,
-        [bookingId]
+      const result = await db.query<{ has_access: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM bookings b
+           JOIN booking_slots s ON b.slot_id = s.id
+           JOIN fields f ON s.field_id = f.id
+           JOIN campaign_info c ON f.campaign_id = c.id
+           JOIN users u ON u.campaign_id = c.id
+           WHERE b.id = $1 AND u.id = $2
+         ) as has_access`,
+        [bookingId, req.userId]
       );
 
-      if (result.rows.length === 0) {
-        res.status(404).json({ error: 'Booking not found' });
-        return;
-      }
-
-      if (result.rows[0].user_id !== req.userId) {
-        res.status(403).json({ error: 'Forbidden - Not the owner of this campaign' });
+      if (!result.rows[0]?.has_access) {
+        res.status(403).json({ error: 'Forbidden - Not a member of this campaign' });
         return;
       }
 
@@ -241,18 +232,17 @@ export const campaignOwnerMiddleware = (db: Pool) => {
         return;
       }
 
-      const result = await db.query<{ user_id: string }>(
-        'SELECT user_id FROM campaign_info WHERE id = $1',
-        [campaignId]
+      const result = await db.query<{ has_access: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM campaign_info c
+           JOIN users u ON u.campaign_id = c.id
+           WHERE c.id = $1 AND u.id = $2
+         ) as has_access`,
+        [campaignId, req.userId]
       );
 
-      if (result.rows.length === 0) {
-        res.status(404).json({ error: 'Campaign not found' });
-        return;
-      }
-
-      if (result.rows[0].user_id !== req.userId) {
-        res.status(403).json({ error: 'Forbidden - Not the owner of this campaign' });
+      if (!result.rows[0]?.has_access) {
+        res.status(403).json({ error: 'Forbidden - Not a member of this campaign' });
         return;
       }
 

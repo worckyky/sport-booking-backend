@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import { BookingAPI, ScheduleConflictError } from '../api/booking.api';
 import { authMiddleware, AuthRequest } from '../../authentication/middleware/auth.middleware';
@@ -37,7 +37,9 @@ export default function createBookingRoutes(db: Pool): Router {
           if (decoded?.sub) return `create-booking:user:${decoded.sub}`;
         } catch {}
       }
-      return `create-booking:ip:${req.ip}`;
+      // Для IP используем ipKeyGenerator для поддержки IPv6
+      const ip = req.ip || req.headers['x-forwarded-for'] as string || 'unknown';
+      return `create-booking:ip:${ipKeyGenerator(ip)}`;
     },
     message: {
       error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Слишком много попыток бронирования, подождите минуту' }

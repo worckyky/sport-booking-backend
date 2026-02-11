@@ -15,6 +15,7 @@ import {
 } from '../model/auth.model';
 import { authMiddleware, AuthRequest as AuthReq } from '../middleware/auth.middleware';
 import { adminMiddleware } from '../middleware/admin.middleware';
+import { bruteForcePrevention, recordLoginAttempt } from '../middleware/brute-force.middleware';
 import type { DbUser } from '../model/user.model';
 import { AuditAPI, AUDIT_EVENTS } from '../../audit/audit.api';
 
@@ -124,16 +125,21 @@ export class AuthRoutes {
       }
     });
 
-    this.router.post('/signin', async (req: Request<{}, any, SignInRequest>, res: Response) => {
-      try {
-        const { email, password } = req.body;
+    this.router.post('/signin', bruteForcePrevention(this.db), async (req: Request<{}, any, SignInRequest>, res: Response) => {
+      const { email, password } = req.body;
+      const ipAddress = req.ip || req.headers['x-forwarded-for'] as string;
+      const userAgent = req.headers['user-agent'];
 
+      try {
         if (!email || !password) {
           return res.status(400).json({ error: 'Email and password are required' });
         }
 
         const data = await this.authAPI.signIn({ email, password });
-        
+
+        // Успешный вход — записываем в лог
+        await recordLoginAttempt(this.db, email, true, ipAddress, userAgent);
+
         this.setAuthCookie(res, data.accessToken);
 
         // Возвращаем ID, роль и статус верификации email
@@ -143,6 +149,9 @@ export class AuthRoutes {
           email_verified: data.email_verified
         });
       } catch (error) {
+        // Неудачная попытка — записываем в лог
+        await recordLoginAttempt(this.db, email, false, ipAddress, userAgent);
+
         if (error instanceof Error) {
           res.status(400).json({ error: error.message });
         } else {
