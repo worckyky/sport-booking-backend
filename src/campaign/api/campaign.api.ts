@@ -6,6 +6,7 @@ import {
   CampaignStatus,
   CreateCampaignRequest,
   UpdateCampaignRequest,
+  type AdminCampaignResponse,
   type ReadinessItem,
   type ReadinessResponse
 } from '../model/campaign.model';
@@ -47,6 +48,54 @@ export class CampaignAPI {
     for (const campaign of rows) {
       const sports = await this.getSportsByCampaignId(campaign.id);
       results.push(this.mapCampaignToResponse(campaign, sports));
+    }
+    return results;
+  }
+
+  /**
+   * Получить все кампании с cross-data для суперадмина
+   */
+  async getAllCampaignsAdmin(): Promise<AdminCampaignResponse[]> {
+    const { rows } = await this.db.query<Campaign & {
+      owner_name: string | null;
+      owner_email: string | null;
+      owner_id: string | null;
+      fields_count: string;
+      bookings_count: string;
+    }>(
+      `SELECT ci.*,
+         u.name as owner_name,
+         u.email as owner_email,
+         u.id as owner_id,
+         COALESCE(fc.cnt, 0)::text as fields_count,
+         COALESCE(bc.cnt, 0)::text as bookings_count
+       FROM campaign_info ci
+       LEFT JOIN users u ON u.campaign_id = ci.id AND u.invited_by IS NULL
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) as cnt FROM fields f WHERE f.campaign_id = ci.id AND f.deleted_at IS NULL
+       ) fc ON true
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) as cnt
+         FROM bookings b
+         JOIN booking_slots s ON b.slot_id = s.id
+         JOIN fields f ON s.field_id = f.id
+         WHERE f.campaign_id = ci.id
+       ) bc ON true
+       ORDER BY ci.created_at DESC`
+    );
+
+    const results: AdminCampaignResponse[] = [];
+    for (const row of rows) {
+      const sports = await this.getSportsByCampaignId(row.id);
+      const base = this.mapCampaignToResponse(row, sports);
+      results.push({
+        ...base,
+        ownerName: row.owner_name ?? null,
+        ownerEmail: row.owner_email ?? null,
+        ownerId: row.owner_id ?? null,
+        fieldsCount: parseInt(row.fields_count, 10) || 0,
+        bookingsCount: parseInt(row.bookings_count, 10) || 0,
+      });
     }
     return results;
   }
@@ -108,12 +157,113 @@ export class CampaignAPI {
     return this.mapCampaignToResponse(created, []);
   }
 
+  // ─── Audit Log ───
+
+  private async logStatusChange(
+    campaignId: string,
+    oldStatus: string | null,
+    newStatus: string,
+    changedBy: string,
+    reason?: string
+  ): Promise<void> {
+    await this.db.query(
+      `INSERT INTO campaign_status_log (campaign_id, old_status, new_status, changed_by, reason)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [campaignId, oldStatus, newStatus, changedBy, reason ?? null]
+    );
+  }
+
+  // ─── Validation for published campaigns ───
+
+  private validateRequiredFields(data: UpdateCampaignRequest, status: CampaignStatus): void {
+    if (status !== CampaignStatus.PUBLISHED) return;
+
+    if (data.name !== undefined && !data.name?.trim()) {
+      const err: any = new Error('Название обязательно для опубликованной площадки');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (data.description !== undefined && !data.description?.trim()) {
+      const err: any = new Error('Описание обязательно для опубликованной площадки');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (data.location !== undefined && (!(data.location as any)?.city || !(data.location as any)?.street)) {
+      const err: any = new Error('Адрес обязателен для опубликованной площадки');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (data.contacts !== undefined && !(data.contacts as any)?.phone) {
+      const err: any = new Error('Телефон обязателен для опубликованной площадки');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (data.paymentMethods !== undefined && (!data.paymentMethods || data.paymentMethods.length === 0)) {
+      const err: any = new Error('Способы оплаты обязательны для опубликованной площадки');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (data.media !== undefined && !(data.media as any)?.main_src) {
+      const err: any = new Error('Главное фото обязательно для опубликованной площадки');
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  // ─── Critical fields separation ───
+
+  private static readonly CRITICAL_FIELDS = ['name', 'location', 'media'] as const;
+
+  private extractCriticalChanges(data: UpdateCampaignRequest): {
+    critical: Record<string, unknown>;
+    nonCritical: UpdateCampaignRequest;
+  } {
+    const critical: Record<string, unknown> = {};
+    const nonCritical = { ...data };
+
+    for (const field of CampaignAPI.CRITICAL_FIELDS) {
+      if ((data as any)[field] !== undefined) {
+        critical[field] = (data as any)[field];
+        delete (nonCritical as any)[field];
+      }
+    }
+
+    return { critical, nonCritical };
+  }
+
+  // ─── Update Campaign ───
+
   async updateCampaign(
     campaignId: string,
     userId: string,
     campaignData: UpdateCampaignRequest
   ): Promise<CampaignResponse> {
-    const requestData = campaignData as unknown as Record<string, unknown>;
+    // Get current campaign status
+    const currentResult = await this.db.query<Campaign>(
+      'SELECT status, pending_changes FROM campaign_info WHERE id = $1 AND user_id = $2',
+      [campaignId, userId]
+    );
+    if (currentResult.rowCount === 0) throw new Error('Campaign not found or not updated');
+    const currentStatus = currentResult.rows[0].status;
+
+    // Validate required fields can't be cleared for published campaigns
+    this.validateRequiredFields(campaignData, currentStatus);
+
+    // For published: separate critical fields → pending_changes
+    let dataToApply = campaignData;
+    let pendingChanges: Record<string, unknown> | null = null;
+
+    if (currentStatus === CampaignStatus.PUBLISHED) {
+      const { critical, nonCritical } = this.extractCriticalChanges(campaignData);
+      if (Object.keys(critical).length > 0) {
+        // Merge with existing pending_changes
+        const existingPending = currentResult.rows[0].pending_changes ?? {};
+        pendingChanges = { ...existingPending, ...critical };
+      }
+      dataToApply = nonCritical;
+    }
+
+    const requestData = dataToApply as unknown as Record<string, unknown>;
 
     const setParts: string[] = [];
     const values: unknown[] = [];
@@ -125,43 +275,48 @@ export class CampaignAPI {
       i += 1;
     };
 
-    if (campaignData.name !== undefined) add('name', campaignData.name);
-    if (campaignData.description !== undefined) add('description', campaignData.description);
+    if (dataToApply.name !== undefined) add('name', dataToApply.name);
+    if (dataToApply.description !== undefined) add('description', dataToApply.description);
 
-    if (campaignData.shortDescription !== undefined) {
-      add('short_description', campaignData.shortDescription);
+    if (dataToApply.shortDescription !== undefined) {
+      add('short_description', dataToApply.shortDescription);
     } else if (requestData.short_description !== undefined) {
       add('short_description', requestData.short_description);
     }
 
-    if (campaignData.location !== undefined) add('location', toJsonbValue(campaignData.location));
-    if (campaignData.contacts !== undefined) add('contacts', toJsonbValue(campaignData.contacts));
+    if (dataToApply.location !== undefined) add('location', toJsonbValue(dataToApply.location));
+    if (dataToApply.contacts !== undefined) add('contacts', toJsonbValue(dataToApply.contacts));
 
-    if (campaignData.workingTimetable !== undefined) {
-      add('working_timetable', toJsonbValue(campaignData.workingTimetable));
+    if (dataToApply.workingTimetable !== undefined) {
+      add('working_timetable', toJsonbValue(dataToApply.workingTimetable));
     } else if (requestData.working_timetable !== undefined) {
       add('working_timetable', toJsonbValue(requestData.working_timetable));
     }
 
-    if (campaignData.socialsLinks !== undefined) {
-      add('socials_links', toJsonbValue(campaignData.socialsLinks));
+    if (dataToApply.socialsLinks !== undefined) {
+      add('socials_links', toJsonbValue(dataToApply.socialsLinks));
     } else if (requestData.socials_links !== undefined) {
       add('socials_links', toJsonbValue(requestData.socials_links));
     }
 
-    if (campaignData.paymentMethods !== undefined) {
-      add('payment_methods', campaignData.paymentMethods);
+    if (dataToApply.paymentMethods !== undefined) {
+      add('payment_methods', dataToApply.paymentMethods);
     } else if (requestData.payment_methods !== undefined) {
       add('payment_methods', requestData.payment_methods);
     }
 
-    if (campaignData.facilities !== undefined) add('facilities', campaignData.facilities);
-    if (campaignData.media !== undefined) add('media', toJsonbValue(campaignData.media));
+    if (dataToApply.facilities !== undefined) add('facilities', dataToApply.facilities);
+    if (dataToApply.media !== undefined) add('media', toJsonbValue(dataToApply.media));
 
-    if (campaignData.timezoneId !== undefined) {
-      add('timezone_id', campaignData.timezoneId);
+    if (dataToApply.timezoneId !== undefined) {
+      add('timezone_id', dataToApply.timezoneId);
     } else if (requestData.timezone_id !== undefined) {
       add('timezone_id', requestData.timezone_id);
+    }
+
+    // Save pending_changes if any critical fields changed
+    if (pendingChanges !== null) {
+      add('pending_changes', JSON.stringify(pendingChanges));
     }
 
     add('updated_at', new Date().toISOString());
@@ -201,8 +356,17 @@ export class CampaignAPI {
   async updateCampaignStatus(
     campaignId: string,
     status: CampaignStatus,
+    changedBy: string,
     comment?: string
   ): Promise<CampaignResponse> {
+    // Get old status for audit log
+    const oldResult = await this.db.query<{ status: string }>(
+      'SELECT status FROM campaign_info WHERE id = $1',
+      [campaignId]
+    );
+    if (oldResult.rowCount === 0) throw new Error('Campaign not found');
+    const oldStatus = oldResult.rows[0].status;
+
     const now = new Date().toISOString();
 
     // При отклонении (draft) — сохранить комментарий
@@ -214,17 +378,20 @@ export class CampaignAPI {
       moderationComment = comment;
       moderationAt = now;
     }
-    // При published — очищаем
-    // При pending/suspended — не трогаем (оставляем текущее)
+
+    // При suspend/reject/published — очистить pending_changes
+    const clearPending = status === CampaignStatus.SUSPENDED
+      || status === CampaignStatus.DRAFT
+      || status === CampaignStatus.PUBLISHED;
 
     let query: string;
     let params: unknown[];
 
     if (status === CampaignStatus.DRAFT || status === CampaignStatus.PUBLISHED || status === CampaignStatus.PENDING) {
-      // draft: set comment (reject), published/pending: clear comment
       query = `
         UPDATE campaign_info
-        SET status = $1, moderation_comment = $2, moderation_at = $3, updated_at = $4
+        SET status = $1, moderation_comment = $2, moderation_at = $3,
+            ${clearPending ? 'pending_changes = NULL,' : ''} updated_at = $4
         WHERE id = $5
         RETURNING *
       `;
@@ -232,7 +399,7 @@ export class CampaignAPI {
     } else {
       query = `
         UPDATE campaign_info
-        SET status = $1, updated_at = $2
+        SET status = $1, ${clearPending ? 'pending_changes = NULL,' : ''} updated_at = $2
         WHERE id = $3
         RETURNING *
       `;
@@ -244,6 +411,14 @@ export class CampaignAPI {
     if (updated.rowCount === 0) {
       throw new Error('Campaign not found');
     }
+
+    // Audit log
+    const reason = status === CampaignStatus.PUBLISHED ? 'Approved'
+      : status === CampaignStatus.SUSPENDED ? `Suspended${comment ? ': ' + comment : ''}`
+      : status === CampaignStatus.DRAFT && comment ? `Rejected: ${comment}`
+      : status === CampaignStatus.PENDING ? 'Submitted for moderation'
+      : undefined;
+    await this.logStatusChange(campaignId, oldStatus, status, changedBy, reason);
 
     const sports = await this.getSportsByCampaignId(campaignId);
     return this.mapCampaignToResponse(updated.rows[0], sports);
@@ -357,7 +532,7 @@ export class CampaignAPI {
     }
 
     // draft → pending, очистить moderation_comment
-    return this.updateCampaignStatus(campaignId, CampaignStatus.PENDING);
+    return this.updateCampaignStatus(campaignId, CampaignStatus.PENDING, userId);
   }
 
   /**
@@ -381,6 +556,124 @@ export class CampaignAPI {
        FROM fields
        WHERE campaign_id = $1 AND deleted_at IS NULL
        ORDER BY created_at ASC`,
+      [campaignId]
+    );
+    return result.rows;
+  }
+
+  // ─── Pending Changes Management ───
+
+  async approvePendingChanges(campaignId: string, userId: string): Promise<CampaignResponse> {
+    const result = await this.db.query<Campaign>(
+      'SELECT * FROM campaign_info WHERE id = $1',
+      [campaignId]
+    );
+    if (result.rowCount === 0) throw new Error('Campaign not found');
+
+    const campaign = result.rows[0];
+    if (!campaign.pending_changes || Object.keys(campaign.pending_changes).length === 0) {
+      throw new Error('No pending changes');
+    }
+
+    const pending = campaign.pending_changes;
+    const setParts: string[] = [];
+    const values: unknown[] = [];
+    let i = 1;
+
+    if (pending.name !== undefined) {
+      setParts.push(`name = $${i}`);
+      values.push(pending.name);
+      i++;
+    }
+    if (pending.location !== undefined) {
+      setParts.push(`location = $${i}`);
+      values.push(JSON.stringify(pending.location));
+      i++;
+    }
+    if (pending.media !== undefined) {
+      setParts.push(`media = $${i}`);
+      values.push(JSON.stringify(pending.media));
+      i++;
+    }
+
+    setParts.push(`pending_changes = NULL`);
+    setParts.push(`updated_at = $${i}`);
+    values.push(new Date().toISOString());
+    i++;
+
+    values.push(campaignId);
+
+    const updated = await this.db.query<Campaign>(
+      `UPDATE campaign_info SET ${setParts.join(', ')} WHERE id = $${i} RETURNING *`,
+      values
+    );
+
+    // Audit log (no status change, just changes approved)
+    await this.logStatusChange(campaignId, campaign.status, campaign.status, userId, 'Changes approved');
+
+    const sports = await this.getSportsByCampaignId(campaignId);
+    return this.mapCampaignToResponse(updated.rows[0], sports);
+  }
+
+  async rejectPendingChanges(campaignId: string, userId: string, comment?: string): Promise<CampaignResponse> {
+    const result = await this.db.query<Campaign>(
+      'SELECT * FROM campaign_info WHERE id = $1',
+      [campaignId]
+    );
+    if (result.rowCount === 0) throw new Error('Campaign not found');
+
+    const campaign = result.rows[0];
+    if (!campaign.pending_changes || Object.keys(campaign.pending_changes).length === 0) {
+      throw new Error('No pending changes');
+    }
+
+    const now = new Date().toISOString();
+    const updated = await this.db.query<Campaign>(
+      `UPDATE campaign_info
+       SET pending_changes = NULL,
+           moderation_comment = COALESCE($1, moderation_comment),
+           moderation_at = CASE WHEN $1 IS NOT NULL THEN $2 ELSE moderation_at END,
+           updated_at = $2
+       WHERE id = $3
+       RETURNING *`,
+      [comment ?? null, now, campaignId]
+    );
+
+    // Audit log
+    const reason = comment ? `Changes rejected: ${comment}` : 'Changes rejected';
+    await this.logStatusChange(campaignId, campaign.status, campaign.status, userId, reason);
+
+    const sports = await this.getSportsByCampaignId(campaignId);
+    return this.mapCampaignToResponse(updated.rows[0], sports);
+  }
+
+  // ─── Status Log ───
+
+  async getCampaignStatusLog(campaignId: string): Promise<{
+    id: string;
+    old_status: string | null;
+    new_status: string;
+    reason: string | null;
+    changed_by_name: string;
+    changed_by_email: string;
+    created_at: string;
+  }[]> {
+    const result = await this.db.query<{
+      id: string;
+      old_status: string | null;
+      new_status: string;
+      reason: string | null;
+      changed_by_name: string;
+      changed_by_email: string;
+      created_at: string;
+    }>(
+      `SELECT l.id, l.old_status, l.new_status, l.reason,
+              COALESCE(u.name, u.email) as changed_by_name, u.email as changed_by_email,
+              l.created_at
+       FROM campaign_status_log l
+       JOIN users u ON u.id = l.changed_by
+       WHERE l.campaign_id = $1
+       ORDER BY l.created_at DESC`,
       [campaignId]
     );
     return result.rows;
@@ -522,6 +815,7 @@ export class CampaignAPI {
       bookingInfo: campaign.booking_info,
       timezoneId: campaign.timezone_id,
       status: campaign.status,
+      pendingChanges: campaign.pending_changes ?? null,
       moderationComment: campaign.moderation_comment ?? null,
       moderationAt: campaign.moderation_at ?? null,
       createdAt: campaign.created_at,

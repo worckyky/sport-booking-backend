@@ -114,6 +114,7 @@ export interface Campaign {
   booking_info: string | null;
   timezone_id: string;
   status: CampaignStatus;
+  pending_changes: Record<string, unknown> | null;
   moderation_comment: string | null;
   moderation_at: string | null;
   created_at: string;
@@ -137,10 +138,19 @@ export interface CampaignResponse {
   bookingInfo: string | null;
   timezoneId: string;
   status: CampaignStatus;
+  pendingChanges: Record<string, unknown> | null;
   moderationComment: string | null;
   moderationAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AdminCampaignResponse extends CampaignResponse {
+  ownerName: string | null;
+  ownerEmail: string | null;
+  ownerId: string | null;
+  fieldsCount: number;
+  bookingsCount: number;
 }
 
 export interface ReadinessItem {

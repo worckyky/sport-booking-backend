@@ -32,6 +32,7 @@ export interface TeamMember {
   phone: string | null;
   is_owner: boolean;
   created_at: string;
+  last_login_at: string | null;
 }
 
 export interface CreateInvitationRequest {

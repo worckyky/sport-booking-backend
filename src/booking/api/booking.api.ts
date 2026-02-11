@@ -890,6 +890,29 @@ export class BookingAPI {
       throw new Error('Cannot delete field with active bookings');
     }
 
+    // Защита последнего поля для published/pending площадок
+    const fieldInfo = await this.db.query<{ campaign_id: string }>(
+      'SELECT campaign_id FROM fields WHERE id = $1 AND deleted_at IS NULL',
+      [fieldId]
+    );
+    if (fieldInfo.rowCount === 0) return false;
+
+    const campaignId = fieldInfo.rows[0].campaign_id;
+    const campaignStatus = await this.db.query<{ status: string }>(
+      'SELECT status FROM campaign_info WHERE id = $1',
+      [campaignId]
+    );
+
+    if (campaignStatus.rows[0]?.status === 'published' || campaignStatus.rows[0]?.status === 'pending') {
+      const fieldCount = await this.db.query<{ count: string }>(
+        'SELECT COUNT(*)::text as count FROM fields WHERE campaign_id = $1 AND deleted_at IS NULL',
+        [campaignId]
+      );
+      if (parseInt(fieldCount.rows[0]?.count || '0', 10) <= 1) {
+        throw new Error('Cannot delete the last field of a published campaign');
+      }
+    }
+
     // Soft delete: set deleted_at instead of physical deletion
     // This preserves booking history for reporting
     const result = await this.db.query(
@@ -1971,6 +1994,38 @@ export class BookingAPI {
       },
       campaign_name: row.campaign_name || null,
     }));
+  }
+
+  // ==================== ADMIN BOOKING BY ID ====================
+
+  async getBookingByIdAdmin(bookingId: string): Promise<BookingDetails | null> {
+    const result = await this.db.query(
+      `SELECT
+         b.id as booking_id, b.slot_id, b.user_id, b.status as booking_status, b.comment as booking_comment,
+         b.contact_name, b.contact_phone, b.created_at as booking_created_at,
+         s.field_id, s.date, s.start_time, s.end_time, s.is_blocked, s.block_reason, s.created_at as slot_created_at,
+         f.id as field_id, f.campaign_id, f.name, f.sport_types, f.is_indoor, f.photos,
+         f.price_per_hour, f.status as field_status, f.slot_duration, f.working_hours_from,
+         f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at,
+         c.name as campaign_name,
+         c.timezone_id as campaign_timezone_id,
+         COALESCE(b.contact_name, u.name) as user_name,
+         COALESCE(b.contact_phone, u.phone) as user_phone,
+         u.email as user_email
+       FROM bookings b
+       JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
+       LEFT JOIN users u ON b.user_id = u.id
+       WHERE b.id = $1`,
+      [bookingId]
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    return this.mapBookingDetailsWithCampaign(result.rows)[0];
   }
 
   // ==================== CAMPAIGN STATS ====================

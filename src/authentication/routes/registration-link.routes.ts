@@ -4,10 +4,12 @@ import { RegistrationLinkAPI } from '../api/registration-link.api';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.middleware';
 import { adminMiddleware } from '../middleware/admin.middleware';
 import { AUTH_COOKIE_NAME, AUTH_TOKEN_TTL_SECONDS } from '../../config/auth';
+import { AuditAPI, AUDIT_EVENTS } from '../../audit/audit.api';
 
 export function createRegistrationLinkRoutes(db: Pool): Router {
   const router = Router();
   const api = new RegistrationLinkAPI(db);
+  const auditAPI = new AuditAPI(db);
 
   // ──────────────────────────────────────
   // Публичные endpoints
@@ -98,6 +100,12 @@ export function createRegistrationLinkRoutes(db: Pool): Router {
     async (req: AuthRequest, res: Response) => {
       try {
         const result = await api.createLink(req.userId!);
+        auditAPI.log({
+          eventType: AUDIT_EVENTS.REGISTRATION_LINK_CREATED,
+          actorId: req.userId!,
+          resourceType: 'registration_link',
+          resourceId: result.id,
+        }).catch(() => {});
         res.status(201).json(result);
       } catch (error) {
         res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });

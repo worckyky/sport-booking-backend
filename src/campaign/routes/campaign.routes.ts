@@ -5,10 +5,12 @@ import { authMiddleware, AuthRequest } from '../../authentication/middleware/aut
 import { adminMiddleware } from '../../authentication/middleware/admin.middleware';
 import { campaignRoleMiddleware } from '../middleware/campaign.middleware';
 import { CampaignStatus, CreateCampaignRequest, UpdateCampaignRequest } from '../model/campaign.model';
+import { AuditAPI, AUDIT_EVENTS } from '../../audit/audit.api';
 
 export default function createCampaignRoutes(db: Pool): Router {
   const router = Router();
   const campaignAPI = new CampaignAPI(db);
+  const auditAPI = new AuditAPI(db);
 
 // GET /campaign - Получить опубликованные кампании (публичный каталог)
 // Query params: sport, q (search), sort (name_asc, name_desc), date (YYYY-MM-DD)
@@ -46,7 +48,7 @@ router.get(
   adminMiddleware(db),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const campaigns = await campaignAPI.getAllCampaigns();
+      const campaigns = await campaignAPI.getAllCampaignsAdmin();
       res.json(campaigns);
     } catch (error) {
       if (error instanceof Error) {
@@ -401,8 +403,23 @@ router.put(
       const campaign = await campaignAPI.updateCampaignStatus(
         campaignId,
         status as CampaignStatus,
+        req.userId!,
         comment
       );
+      const eventMap: Record<string, string> = {
+        published: AUDIT_EVENTS.CAMPAIGN_PUBLISHED,
+        draft: AUDIT_EVENTS.CAMPAIGN_REJECTED,
+        suspended: AUDIT_EVENTS.CAMPAIGN_SUSPENDED,
+      };
+      if (eventMap[status]) {
+        auditAPI.log({
+          eventType: eventMap[status],
+          actorId: req.userId!,
+          resourceType: 'campaign',
+          resourceId: campaignId,
+          changes: comment ? { comment: { to: comment } } : undefined,
+        }).catch(() => {});
+      }
       res.json(campaign);
     } catch (error) {
       if (error instanceof Error) {
@@ -411,6 +428,70 @@ router.put(
         } else {
           res.status(400).json({ error: error.message });
         }
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
+// PUT /campaign/:id/approve-changes - Одобрить pending changes (только ADMIN)
+router.put(
+  '/:id/approve-changes',
+  adminMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const campaignId = req.params.id;
+      const campaign = await campaignAPI.approvePendingChanges(campaignId, req.userId!);
+      res.json(campaign);
+    } catch (error) {
+      if (error instanceof Error) {
+        const status = error.message === 'Campaign not found' ? 404
+          : error.message === 'No pending changes' ? 400
+          : 400;
+        res.status(status).json({ error: error.message });
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
+// PUT /campaign/:id/reject-changes - Отклонить pending changes (только ADMIN)
+router.put(
+  '/:id/reject-changes',
+  adminMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const campaignId = req.params.id;
+      const { comment } = req.body as { comment?: string };
+      const campaign = await campaignAPI.rejectPendingChanges(campaignId, req.userId!, comment);
+      res.json(campaign);
+    } catch (error) {
+      if (error instanceof Error) {
+        const status = error.message === 'Campaign not found' ? 404
+          : error.message === 'No pending changes' ? 400
+          : 400;
+        res.status(status).json({ error: error.message });
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
+// GET /campaign/:id/status-log - История статусов (только ADMIN)
+router.get(
+  '/:id/status-log',
+  adminMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const campaignId = req.params.id;
+      const log = await campaignAPI.getCampaignStatusLog(campaignId);
+      res.json(log);
+    } catch (error) {
+      if (error instanceof Error) {
+        res.status(400).json({ error: error.message });
       } else {
         res.status(500).json({ error: 'Internal server error' });
       }

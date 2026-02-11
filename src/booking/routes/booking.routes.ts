@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import { BookingAPI, ScheduleConflictError } from '../api/booking.api';
 import { authMiddleware, AuthRequest } from '../../authentication/middleware/auth.middleware';
 import { adminMiddleware } from '../../authentication/middleware/admin.middleware';
+import { AuditAPI, AUDIT_EVENTS } from '../../audit/audit.api';
 import {
   fieldOwnerMiddleware,
   slotOwnerMiddleware,
@@ -21,6 +22,7 @@ import { Errors, ErrorCode, handleError, sendError } from '../../utils/errors';
 export default function createBookingRoutes(db: Pool): Router {
   const router = Router();
   const api = new BookingAPI(db);
+  const auditAPI = new AuditAPI(db);
 
   // Per-user rate limit для создания бронирований (строже чем общий bookingLimiter)
   const createBookingLimiter = rateLimit({
@@ -212,8 +214,11 @@ export default function createBookingRoutes(db: Pool): Router {
         }
         res.status(204).send();
       } catch (error) {
-        if ((error as Error).message.includes('active bookings')) {
+        const msg = (error as Error).message;
+        if (msg.includes('active bookings')) {
           res.status(409).json({ error: 'Cannot delete field with active bookings' });
+        } else if (msg.includes('last field')) {
+          res.status(400).json({ error: msg });
         } else {
           res.status(500).json({ error: 'Internal server error' });
         }
@@ -544,6 +549,25 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   );
 
+  // GET /booking/admin/:id — получить бронь по ID (только для ADMIN)
+  router.get('/admin/:id', adminMiddleware(db), async (req: AuthRequest, res: Response) => {
+    try {
+      const bookingId = req.params.id;
+      if (!isValidUUID(bookingId)) {
+        return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid booking ID format', 'id');
+      }
+
+      const booking = await api.getBookingByIdAdmin(bookingId);
+      if (!booking) {
+        return sendError(res, 404, ErrorCode.NOT_FOUND, 'Booking not found', 'id');
+      }
+
+      res.json(booking);
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   // PUT /booking/admin/bulk-status — массовое обновление статусов (только для ADMIN)
   router.put('/admin/bulk-status', adminMiddleware(db), async (req: AuthRequest, res: Response) => {
     try {
@@ -574,6 +598,17 @@ export default function createBookingRoutes(db: Pool): Router {
       }
 
       const result = await api.bulkUpdateBookingStatus(bookingIds, status);
+      const eventMap: Record<string, string> = {
+        confirmed: AUDIT_EVENTS.BOOKING_BULK_CONFIRMED,
+        rejected: AUDIT_EVENTS.BOOKING_BULK_REJECTED,
+        cancelled_by_admin: AUDIT_EVENTS.BOOKING_BULK_CANCELLED,
+      };
+      auditAPI.log({
+        eventType: eventMap[status] || `booking.bulk_${status}`,
+        actorId: req.userId!,
+        resourceType: 'booking',
+        metadata: { count: result.updated, bookingIds },
+      }).catch(() => {});
       res.json(result);
     } catch (error) {
       handleError(res, error);

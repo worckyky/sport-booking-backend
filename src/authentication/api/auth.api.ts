@@ -38,6 +38,9 @@ export class AuthAPI {
       expiresIn: AUTH_TOKEN_TTL_SECONDS
     });
 
+    // Update last login timestamp
+    await this.db.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
+
     return {
       id: user.id,
       accessToken,
@@ -305,7 +308,7 @@ export class AuthAPI {
   }
 
   /**
-   * Получить всех пользователей (только для ADMIN)
+   * Получить всех пользователей (только для ADMIN) — с cross-data
    */
   async getAllUsers(): Promise<Array<{
     id: string;
@@ -316,14 +319,28 @@ export class AuthAPI {
     email_verified: EMAIL_STATUS;
     is_blocked: boolean;
     created_at: string;
+    campaign_id: string | null;
+    campaign_name: string | null;
+    bookings_count: number;
+    last_booking_at: string | null;
   }>> {
-    const result = await this.db.query<DbUser>(
-      `SELECT id, email, name, phone, role, email_verified, is_blocked, created_at
-       FROM users
-       ORDER BY created_at DESC`
+    const result = await this.db.query(
+      `SELECT
+         u.id, u.email, u.name, u.phone, u.role, u.email_verified, u.is_blocked, u.created_at,
+         u.campaign_id,
+         ci.name as campaign_name,
+         COALESCE(bc.bookings_count, 0)::int as bookings_count,
+         bc.last_booking_at
+       FROM users u
+       LEFT JOIN campaign_info ci ON u.campaign_id = ci.id
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) as bookings_count, MAX(b.created_at) as last_booking_at
+         FROM bookings b WHERE b.user_id = u.id
+       ) bc ON true
+       ORDER BY u.created_at DESC`
     );
 
-    return result.rows.map(user => ({
+    return result.rows.map((user: any) => ({
       id: user.id,
       email: user.email,
       name: user.name,
@@ -331,8 +348,81 @@ export class AuthAPI {
       role: user.role,
       email_verified: user.email_verified ?? EMAIL_STATUS.NOT_VERIFIED,
       is_blocked: user.is_blocked ?? false,
-      created_at: user.created_at
+      created_at: user.created_at,
+      campaign_id: user.campaign_id ?? null,
+      campaign_name: user.campaign_name ?? null,
+      bookings_count: user.bookings_count ?? 0,
+      last_booking_at: user.last_booking_at ?? null,
     }));
+  }
+
+  /**
+   * Агрегированная статистика платформы для dashboard суперадмина
+   */
+  async getAdminStats(): Promise<{
+    users: { total: number; new7d: number; newTrend: number; blocked: number };
+    campaigns: { total: number; published: number; pending: number; draft: number };
+    bookings: { total: number; today: number; pending: number; confirmed: number; completedRate: number };
+  }> {
+    const [usersRes, usersNew7dRes, usersNew14dRes, blockedRes, campaignsRes, bookingsRes] = await Promise.all([
+      this.db.query<{ count: string }>('SELECT COUNT(*) as count FROM users'),
+      this.db.query<{ count: string }>(
+        `SELECT COUNT(*) as count FROM users WHERE created_at >= NOW() - INTERVAL '7 days'`
+      ),
+      this.db.query<{ count: string }>(
+        `SELECT COUNT(*) as count FROM users WHERE created_at >= NOW() - INTERVAL '14 days' AND created_at < NOW() - INTERVAL '7 days'`
+      ),
+      this.db.query<{ count: string }>('SELECT COUNT(*) as count FROM users WHERE is_blocked = true'),
+      this.db.query<{ status: string; count: string }>(
+        `SELECT status, COUNT(*) as count FROM campaign_info GROUP BY status`
+      ),
+      this.db.query<{ total: string; today: string; pending: string; confirmed: string; completed: string }>(
+        `SELECT
+           COUNT(*) as total,
+           COUNT(*) FILTER (WHERE b.created_at::date = CURRENT_DATE) as today,
+           COUNT(*) FILTER (WHERE b.status = 'pending') as pending,
+           COUNT(*) FILTER (WHERE b.status = 'confirmed') as confirmed,
+           COUNT(*) FILTER (WHERE b.status = 'completed') as completed
+         FROM bookings b`
+      ),
+    ]);
+
+    const usersTotal = parseInt(usersRes.rows[0].count, 10);
+    const new7d = parseInt(usersNew7dRes.rows[0].count, 10);
+    const new14d = parseInt(usersNew14dRes.rows[0].count, 10);
+    const newTrend = new14d > 0 ? Math.round(((new7d - new14d) / new14d) * 100) : (new7d > 0 ? 100 : 0);
+
+    const campaignsByStatus: Record<string, number> = {};
+    for (const row of campaignsRes.rows) {
+      campaignsByStatus[row.status] = parseInt(row.count, 10);
+    }
+
+    const bRow = bookingsRes.rows[0];
+    const totalBookings = parseInt(bRow.total, 10);
+    const completedBookings = parseInt(bRow.completed, 10);
+    const completedRate = totalBookings > 0 ? Math.round((completedBookings / totalBookings) * 100) : 0;
+
+    return {
+      users: {
+        total: usersTotal,
+        new7d,
+        newTrend,
+        blocked: parseInt(blockedRes.rows[0].count, 10),
+      },
+      campaigns: {
+        total: Object.values(campaignsByStatus).reduce((a, b) => a + b, 0),
+        published: campaignsByStatus['published'] ?? 0,
+        pending: campaignsByStatus['pending'] ?? 0,
+        draft: campaignsByStatus['draft'] ?? 0,
+      },
+      bookings: {
+        total: totalBookings,
+        today: parseInt(bRow.today, 10),
+        pending: parseInt(bRow.pending, 10),
+        confirmed: parseInt(bRow.confirmed, 10),
+        completedRate,
+      },
+    };
   }
 
   /**

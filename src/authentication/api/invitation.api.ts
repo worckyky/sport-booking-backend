@@ -346,8 +346,8 @@ export class InvitationAPI {
    * Список команды площадки
    */
   async getCampaignTeam(campaignId: string): Promise<TeamMember[]> {
-    const result = await this.db.query<TeamMember & { invited_by: string | null }>(
-      `SELECT id, email, name, phone, invited_by, created_at
+    const result = await this.db.query<TeamMember & { invited_by: string | null; last_login_at: string | null }>(
+      `SELECT id, email, name, phone, invited_by, created_at, last_login_at
        FROM users
        WHERE campaign_id = $1 AND role = 'CAMPAIGN'
        ORDER BY invited_by NULLS FIRST, created_at ASC`,
@@ -360,7 +360,8 @@ export class InvitationAPI {
       name: row.name,
       phone: row.phone,
       is_owner: row.invited_by === null,
-      created_at: row.created_at
+      created_at: row.created_at,
+      last_login_at: row.last_login_at,
     }));
   }
 
@@ -426,8 +427,8 @@ export class InvitationAPI {
    * Список всех ADMIN-ов
    */
   async getAdminTeam(): Promise<TeamMember[]> {
-    const result = await this.db.query<TeamMember & { invited_by: string | null }>(
-      `SELECT id, email, name, phone, invited_by, created_at
+    const result = await this.db.query<TeamMember & { invited_by: string | null; last_login_at: string | null }>(
+      `SELECT id, email, name, phone, invited_by, created_at, last_login_at
        FROM users
        WHERE role = 'ADMIN'
        ORDER BY invited_by NULLS FIRST, created_at ASC`
@@ -439,7 +440,8 @@ export class InvitationAPI {
       name: row.name,
       phone: row.phone,
       is_owner: row.invited_by === null,
-      created_at: row.created_at
+      created_at: row.created_at,
+      last_login_at: row.last_login_at,
     }));
   }
 

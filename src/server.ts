@@ -9,6 +9,7 @@ import { createInvitationRoutes } from './authentication/routes/invitation.route
 import { createRegistrationLinkRoutes } from './authentication/routes/registration-link.routes';
 import createCampaignRoutes from './campaign/routes/campaign.routes';
 import createBookingRoutes from './booking/routes/booking.routes';
+import { createAuditRoutes } from './audit/audit.routes';
 import { getJwtSecret } from './config/auth';
 import { getDbPool } from './config/db';
 import { runMigrations } from './scripts/migrations';
@@ -96,6 +97,7 @@ async function start(): Promise<void> {
   app.use('/auth', authLimiter, registrationLinkRoutes);
   app.use('/campaign', campaignRoutes);
   app.use('/booking', bookingLimiter, bookingRoutes);
+  app.use('/audit', createAuditRoutes(db));
 
   // Health check endpoint
   app.get('/health', (req: Request, res: Response<HealthResponse>) => {

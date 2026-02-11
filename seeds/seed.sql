@@ -342,3 +342,14 @@ INSERT INTO registration_links (
   '330e8400-e29b-41d4-a716-446655440003', -- admin@test.com
   NOW() + INTERVAL '7 days'
 );
+
+-- =====================================================
+-- PLATFORM SETTINGS (defaults)
+-- =====================================================
+INSERT INTO platform_settings (key, value) VALUES
+  ('booking_limit_per_user', '10'),
+  ('booking_rate_limit_per_min', '5'),
+  ('registration_link_ttl_days', '7'),
+  ('invitation_ttl_days', '7'),
+  ('default_timezone', '"Europe/Moscow"')
+ON CONFLICT (key) DO NOTHING;
