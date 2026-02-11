@@ -62,8 +62,8 @@ export class AuthRoutes {
 
     if (user.role === USER_ROLE.CAMPAIGN) {
       // JOIN через users.campaign_id — работает и для owner, и для manager
-      const campaignRes = await this.db.query<{ id: string; timezone_id: string | null; name: string | null }>(
-        `SELECT ci.id, ci.timezone_id, ci.name
+      const campaignRes = await this.db.query<{ id: string; timezone_id: string | null; name: string | null; status: string | null; moderation_comment: string | null }>(
+        `SELECT ci.id, ci.timezone_id, ci.name, ci.status, ci.moderation_comment
          FROM campaign_info ci
          JOIN users u ON u.campaign_id = ci.id
          WHERE u.id = $1
@@ -74,6 +74,8 @@ export class AuthRoutes {
         profile.campaign_id = campaignRes.rows[0].id;
         profile.campaign_timezone_id = campaignRes.rows[0].timezone_id ?? 'Europe/Moscow';
         profile.campaign_name = campaignRes.rows[0].name ?? undefined;
+        profile.campaign_status = campaignRes.rows[0].status ?? undefined;
+        profile.campaign_moderation_comment = campaignRes.rows[0].moderation_comment ?? undefined;
       }
       // invited_by для определения прав на управление командой
       profile.invited_by = user.invited_by ?? undefined;

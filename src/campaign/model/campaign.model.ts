@@ -114,6 +114,8 @@ export interface Campaign {
   booking_info: string | null;
   timezone_id: string;
   status: CampaignStatus;
+  moderation_comment: string | null;
+  moderation_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -135,8 +137,22 @@ export interface CampaignResponse {
   bookingInfo: string | null;
   timezoneId: string;
   status: CampaignStatus;
+  moderationComment: string | null;
+  moderationAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ReadinessItem {
+  key: string;
+  label: string;
+  done: boolean;
+}
+
+export interface ReadinessResponse {
+  ready: boolean;
+  items: ReadinessItem[];
+  missingCount: number;
 }
 
 export interface CreateCampaignRequest {

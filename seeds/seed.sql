@@ -2,7 +2,7 @@
 -- Run with: npm run seed
 
 -- Clean existing data (in reverse order of dependencies)
-TRUNCATE TABLE bookings, booking_slots, fields, password_reset_tokens, users, campaign_info CASCADE;
+TRUNCATE TABLE bookings, booking_slots, fields, password_reset_tokens, registration_links, invitations, users, campaign_info CASCADE;
 
 -- =====================================================
 -- 1. CAMPAIGN INFO (created first for foreign key)
@@ -325,3 +325,20 @@ BEGIN
   RAISE NOTICE '   Slots: %', slot_count;
   RAISE NOTICE '   Bookings: %', booking_count;
 END $$;
+
+-- =====================================================
+-- REGISTRATION LINKS (тестовая ссылка для регистрации площадки)
+-- =====================================================
+-- Token: test-registration-token-12345
+-- URL: /auth/register-campaign?token=test-registration-token-12345
+INSERT INTO registration_links (
+  id,
+  token_hash,
+  created_by,
+  expires_at
+) VALUES (
+  '660e8400-e29b-41d4-a716-446655440001',
+  'b9ac56ad8da5de71fb8068f4cbec22f330612d8db822406760c15ebae97f1f47',
+  '330e8400-e29b-41d4-a716-446655440003', -- admin@test.com
+  NOW() + INTERVAL '7 days'
+);

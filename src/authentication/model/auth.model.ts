@@ -46,6 +46,8 @@ export interface UserProfile {
   campaign_id?: string;
   campaign_timezone_id?: string;  // IANA timezone ID (e.g., 'Europe/Moscow')
   campaign_name?: string;
+  campaign_status?: string;
+  campaign_moderation_comment?: string;
   invited_by?: string;  // NULL = оригинальный (может приглашать), иначе — приглашённый
   created_at: string;
   updated_at: string;

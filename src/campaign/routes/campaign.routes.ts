@@ -271,6 +271,106 @@ router.get(
   }
 );
 
+// GET /campaign/:id/readiness - Чеклист готовности (CAMPAIGN owner)
+router.get(
+  '/:id/readiness',
+  authMiddleware(db),
+  campaignRoleMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const campaignId = req.params.id;
+
+      // Проверить что пользователь принадлежит к этой площадке
+      const userResult = await db.query<{ campaign_id: string | null }>(
+        'SELECT campaign_id FROM users WHERE id = $1',
+        [req.userId]
+      );
+      if (userResult.rows[0]?.campaign_id !== campaignId) {
+        res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+
+      const readiness = await campaignAPI.getCampaignReadiness(campaignId);
+      res.json(readiness);
+    } catch (error) {
+      if (error instanceof Error) {
+        res.status(400).json({ error: error.message });
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
+// POST /campaign/:id/submit-moderation - Подать на модерацию (CAMPAIGN owner)
+router.post(
+  '/:id/submit-moderation',
+  authMiddleware(db),
+  campaignRoleMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const campaignId = req.params.id;
+
+      if (!req.userId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const campaign = await campaignAPI.submitForModeration(campaignId, req.userId);
+      res.json(campaign);
+    } catch (error: any) {
+      if (error.missing) {
+        res.status(400).json({ error: error.message, missing: error.missing });
+      } else if (error instanceof Error) {
+        const status = error.message === 'Campaign not found' ? 404
+          : error.message === 'Access denied' ? 403
+          : 400;
+        res.status(status).json({ error: error.message });
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
+// GET /campaign/:id/admin-readiness - Чеклист готовности (ADMIN view)
+router.get(
+  '/:id/admin-readiness',
+  adminMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const campaignId = req.params.id;
+      const readiness = await campaignAPI.getCampaignReadiness(campaignId);
+      res.json(readiness);
+    } catch (error) {
+      if (error instanceof Error) {
+        res.status(400).json({ error: error.message });
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
+// GET /campaign/:id/fields-list - Список полей для суперадмина (ADMIN)
+router.get(
+  '/:id/fields-list',
+  adminMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const campaignId = req.params.id;
+      const fields = await campaignAPI.getCampaignFields(campaignId);
+      res.json(fields);
+    } catch (error) {
+      if (error instanceof Error) {
+        res.status(400).json({ error: error.message });
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
 // PUT /campaign/:id/status - Изменить статус кампании (только ADMIN)
 router.put(
   '/:id/status',
@@ -278,7 +378,7 @@ router.put(
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const campaignId = req.params.id;
-      const { status } = req.body as { status?: string };
+      const { status, comment } = req.body as { status?: string; comment?: string };
 
       if (!campaignId) {
         res.status(400).json({ error: 'Campaign ID is required' });
@@ -300,7 +400,8 @@ router.put(
 
       const campaign = await campaignAPI.updateCampaignStatus(
         campaignId,
-        status as CampaignStatus
+        status as CampaignStatus,
+        comment
       );
       res.json(campaign);
     } catch (error) {

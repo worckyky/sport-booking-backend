@@ -5,7 +5,9 @@ import {
   CampaignResponse,
   CampaignStatus,
   CreateCampaignRequest,
-  UpdateCampaignRequest
+  UpdateCampaignRequest,
+  type ReadinessItem,
+  type ReadinessResponse
 } from '../model/campaign.model';
 import { normalizeEnumArray, normalizeJsonArray, toJsonbValue } from '../../utils/pg';
 
@@ -198,17 +200,46 @@ export class CampaignAPI {
 
   async updateCampaignStatus(
     campaignId: string,
-    status: CampaignStatus
+    status: CampaignStatus,
+    comment?: string
   ): Promise<CampaignResponse> {
-    const updated = await this.db.query<Campaign>(
-      `
+    const now = new Date().toISOString();
+
+    // При отклонении (draft) — сохранить комментарий
+    // При публикации — очистить комментарий
+    let moderationComment: string | null = null;
+    let moderationAt: string | null = null;
+
+    if (status === CampaignStatus.DRAFT && comment) {
+      moderationComment = comment;
+      moderationAt = now;
+    }
+    // При published — очищаем
+    // При pending/suspended — не трогаем (оставляем текущее)
+
+    let query: string;
+    let params: unknown[];
+
+    if (status === CampaignStatus.DRAFT || status === CampaignStatus.PUBLISHED || status === CampaignStatus.PENDING) {
+      // draft: set comment (reject), published/pending: clear comment
+      query = `
+        UPDATE campaign_info
+        SET status = $1, moderation_comment = $2, moderation_at = $3, updated_at = $4
+        WHERE id = $5
+        RETURNING *
+      `;
+      params = [status, moderationComment, moderationAt, now, campaignId];
+    } else {
+      query = `
         UPDATE campaign_info
         SET status = $1, updated_at = $2
         WHERE id = $3
         RETURNING *
-      `,
-      [status, new Date().toISOString(), campaignId]
-    );
+      `;
+      params = [status, now, campaignId];
+    }
+
+    const updated = await this.db.query<Campaign>(query, params);
 
     if (updated.rowCount === 0) {
       throw new Error('Campaign not found');
@@ -216,6 +247,143 @@ export class CampaignAPI {
 
     const sports = await this.getSportsByCampaignId(campaignId);
     return this.mapCampaignToResponse(updated.rows[0], sports);
+  }
+
+  /**
+   * Проверка готовности площадки к модерации (8 пунктов)
+   */
+  async getCampaignReadiness(campaignId: string): Promise<ReadinessResponse> {
+    const campaign = await this.db.query<Campaign>(
+      'SELECT * FROM campaign_info WHERE id = $1',
+      [campaignId]
+    );
+
+    if (campaign.rowCount === 0) {
+      throw new Error('Campaign not found');
+    }
+
+    const c = campaign.rows[0];
+
+    // Подсчёт активных полей
+    const fieldsResult = await this.db.query<{ count: string }>(
+      `SELECT COUNT(*)::text as count FROM fields
+       WHERE campaign_id = $1 AND deleted_at IS NULL AND status = 'active'`,
+      [campaignId]
+    );
+    const fieldsCount = parseInt(fieldsResult.rows[0]?.count || '0', 10);
+
+    // Проверка рабочего расписания (хотя бы 1 рабочий день)
+    let hasWorkingDay = false;
+    if (c.working_timetable) {
+      const timetable = typeof c.working_timetable === 'string'
+        ? JSON.parse(c.working_timetable)
+        : c.working_timetable;
+      for (const day of Object.values(timetable) as any[]) {
+        if (day && !day.isWeekend && day.from && day.to) {
+          hasWorkingDay = true;
+          break;
+        }
+      }
+    }
+
+    const items: ReadinessItem[] = [
+      { key: 'name', label: 'Название площадки', done: !!c.name && c.name.trim().length > 0 },
+      { key: 'description', label: 'Описание', done: !!c.description && c.description.trim().length > 0 },
+      {
+        key: 'location',
+        label: 'Адрес',
+        done: !!(c.location && (c.location as any).city && (c.location as any).street)
+      },
+      {
+        key: 'phone',
+        label: 'Контактный телефон',
+        done: !!(c.contacts && (c.contacts as any).phone)
+      },
+      { key: 'timetable', label: 'Расписание работы', done: hasWorkingDay },
+      {
+        key: 'payment',
+        label: 'Способы оплаты',
+        done: !!(c.payment_methods && c.payment_methods.length > 0)
+      },
+      {
+        key: 'photo',
+        label: 'Главное фото',
+        done: !!(c.media && (c.media as any).main_src)
+      },
+      { key: 'fields', label: 'Минимум 1 поле', done: fieldsCount > 0 }
+    ];
+
+    const missingCount = items.filter(i => !i.done).length;
+
+    return {
+      ready: missingCount === 0,
+      items,
+      missingCount
+    };
+  }
+
+  /**
+   * Подать площадку на модерацию (draft → pending)
+   */
+  async submitForModeration(campaignId: string, userId: string): Promise<CampaignResponse> {
+    // Проверить владельца
+    const campaignResult = await this.db.query<Campaign>(
+      'SELECT * FROM campaign_info WHERE id = $1',
+      [campaignId]
+    );
+
+    if (campaignResult.rowCount === 0) {
+      throw new Error('Campaign not found');
+    }
+
+    const campaign = campaignResult.rows[0];
+
+    if (campaign.user_id !== userId) {
+      throw new Error('Access denied');
+    }
+
+    if (campaign.status !== CampaignStatus.DRAFT) {
+      throw new Error('Campaign can only be submitted from draft status');
+    }
+
+    // Проверить готовность
+    const readiness = await this.getCampaignReadiness(campaignId);
+    if (!readiness.ready) {
+      const missing = readiness.items.filter(i => !i.done).map(i => ({ key: i.key, label: i.label }));
+      const error: any = new Error('Campaign is not ready for moderation');
+      error.missing = missing;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // draft → pending, очистить moderation_comment
+    return this.updateCampaignStatus(campaignId, CampaignStatus.PENDING);
+  }
+
+  /**
+   * Получить поля площадки (для суперадмина)
+   */
+  async getCampaignFields(campaignId: string): Promise<{
+    id: string;
+    name: string;
+    sport_types: string[];
+    status: string;
+    price_per_hour: number | null;
+  }[]> {
+    const result = await this.db.query<{
+      id: string;
+      name: string;
+      sport_types: string[];
+      status: string;
+      price_per_hour: number | null;
+    }>(
+      `SELECT id, name, sport_types, status, price_per_hour
+       FROM fields
+       WHERE campaign_id = $1 AND deleted_at IS NULL
+       ORDER BY created_at ASC`,
+      [campaignId]
+    );
+    return result.rows;
   }
 
   async getPublishedCampaigns(filters?: {
@@ -354,6 +522,8 @@ export class CampaignAPI {
       bookingInfo: campaign.booking_info,
       timezoneId: campaign.timezone_id,
       status: campaign.status,
+      moderationComment: campaign.moderation_comment ?? null,
+      moderationAt: campaign.moderation_at ?? null,
       createdAt: campaign.created_at,
       updatedAt: campaign.updated_at
     };
