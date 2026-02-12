@@ -960,7 +960,8 @@ export class BookingAPI {
     const existingSlots = await this.db.query(
       `SELECT s.*, b.id as booking_id, b.user_id as booking_user_id, b.status as booking_status,
               COALESCE(b.contact_name, u.name) as user_name,
-              COALESCE(b.contact_phone, u.phone) as user_phone
+              COALESCE(b.contact_phone, u.phone) as user_phone,
+              (u.email IS NOT NULL AND u.password_hash IS NOT NULL) as is_registered
        FROM booking_slots s
        LEFT JOIN LATERAL (
          SELECT * FROM bookings
@@ -1026,7 +1027,8 @@ export class BookingAPI {
     const allSlots = await this.db.query(
       `SELECT s.*, b.id as booking_id, b.user_id as booking_user_id, b.status as booking_status,
               COALESCE(b.contact_name, u.name) as user_name,
-              COALESCE(b.contact_phone, u.phone) as user_phone
+              COALESCE(b.contact_phone, u.phone) as user_phone,
+              (u.email IS NOT NULL AND u.password_hash IS NOT NULL) as is_registered
        FROM booking_slots s
        LEFT JOIN LATERAL (
          SELECT * FROM bookings
@@ -1117,6 +1119,7 @@ export class BookingAPI {
         status: row.booking_status,
         user_name: row.user_name || null,
         user_phone: row.user_phone || null,
+        is_registered: row.is_registered === true,
       } : null
     }));
   }
@@ -2194,13 +2197,14 @@ export class BookingAPI {
           COALESCE(SUM(CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed') THEN f.price_per_hour ELSE 0 END), 0)::numeric AS prev_revenue,
           COUNT(CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed','pending') THEN 1 END)::int AS current_bookings,
           COUNT(CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed','pending') THEN 1 END)::int AS prev_bookings,
-          COUNT(DISTINCT CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed','pending') AND b.user_id IS NOT NULL THEN b.user_id END)::int AS current_platform_clients,
-          COUNT(DISTINCT CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed','pending') AND b.user_id IS NOT NULL THEN b.user_id END)::int AS prev_platform_clients,
-          COUNT(DISTINCT CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed','pending') AND b.user_id IS NULL AND b.contact_phone IS NOT NULL THEN b.contact_phone END)::int AS current_manual_clients,
-          COUNT(DISTINCT CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed','pending') AND b.user_id IS NULL AND b.contact_phone IS NOT NULL THEN b.contact_phone END)::int AS prev_manual_clients
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed','pending') AND u.email IS NOT NULL AND u.password_hash IS NOT NULL THEN b.user_id END)::int AS current_platform_clients,
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed','pending') AND u.email IS NOT NULL AND u.password_hash IS NOT NULL THEN b.user_id END)::int AS prev_platform_clients,
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed','pending') AND (u.email IS NULL OR u.password_hash IS NULL) THEN b.user_id END)::int AS current_manual_clients,
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed','pending') AND (u.email IS NULL OR u.password_hash IS NULL) THEN b.user_id END)::int AS prev_manual_clients
         FROM bookings b
         JOIN booking_slots s ON b.slot_id = s.id
         JOIN fields f ON s.field_id = f.id
+        LEFT JOIN users u ON b.user_id = u.id
         WHERE f.campaign_id = $1 AND f.deleted_at IS NULL
           AND s.date BETWEEN $4 AND $3
       `, [campaignId, currentStart, yesterday, prevStart, prevEnd]),
@@ -2224,12 +2228,13 @@ export class BookingAPI {
       // Revenue by day (30 days)
       this.db.query(`
         SELECT s.date::text,
-          COALESCE(SUM(CASE WHEN b.user_id IS NOT NULL THEN f.price_per_hour ELSE 0 END), 0)::numeric AS platform,
-          COALESCE(SUM(CASE WHEN b.user_id IS NULL THEN f.price_per_hour ELSE 0 END), 0)::numeric AS manual,
+          COALESCE(SUM(CASE WHEN u.email IS NOT NULL AND u.password_hash IS NOT NULL THEN f.price_per_hour ELSE 0 END), 0)::numeric AS platform,
+          COALESCE(SUM(CASE WHEN u.email IS NULL OR u.password_hash IS NULL THEN f.price_per_hour ELSE 0 END), 0)::numeric AS manual,
           COUNT(*)::int AS bookings_count
         FROM bookings b
         JOIN booking_slots s ON b.slot_id = s.id
         JOIN fields f ON s.field_id = f.id
+        LEFT JOIN users u ON b.user_id = u.id
         WHERE f.campaign_id = $1 AND s.date BETWEEN $2 AND $3
           AND b.status IN ('confirmed','completed') AND f.deleted_at IS NULL
         GROUP BY s.date ORDER BY s.date

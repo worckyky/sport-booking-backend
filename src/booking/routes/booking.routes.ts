@@ -538,6 +538,75 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   });
 
+  // PUT /booking/bulk-status — массовое обновление статусов (для владельца campaign)
+  router.put('/bulk-status', authMiddleware(db), campaignRoleMiddleware(db), async (req: AuthRequest, res: Response) => {
+    try {
+      const { bookingIds, status, campaignId } = req.body;
+
+      if (!bookingIds || !Array.isArray(bookingIds) || bookingIds.length === 0) {
+        return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'bookingIds array is required', 'bookingIds');
+      }
+
+      if (bookingIds.length > 100) {
+        return sendError(res, 400, ErrorCode.VALIDATION_ERROR, 'Maximum 100 bookings per request', 'bookingIds');
+      }
+
+      if (!status) {
+        return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'status is required', 'status');
+      }
+
+      const validStatuses = ['confirmed', 'rejected'];
+      if (!validStatuses.includes(status)) {
+        return sendError(res, 400, ErrorCode.VALIDATION_ERROR, `Invalid status for bulk update. Must be one of: ${validStatuses.join(', ')}`, 'status');
+      }
+
+      if (!campaignId || !isValidUUID(campaignId)) {
+        return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'Valid campaignId is required', 'campaignId');
+      }
+
+      // Проверяем принадлежность пользователя к площадке
+      const userResult = await db.query<{ campaign_id: string | null }>(
+        'SELECT campaign_id FROM users WHERE id = $1',
+        [req.userId]
+      );
+      if (userResult.rows[0]?.campaign_id !== campaignId) {
+        return sendError(res, 403, ErrorCode.FORBIDDEN, 'Access denied');
+      }
+
+      // Проверяем UUID формат
+      for (const id of bookingIds) {
+        if (!isValidUUID(id)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, `Invalid booking ID format: ${id}`, 'bookingIds');
+        }
+      }
+
+      // Проверяем что все брони принадлежат этой площадке
+      const ownershipCheck = await db.query(
+        `SELECT COUNT(*) as cnt FROM bookings b
+         JOIN booking_slots s ON b.slot_id = s.id
+         JOIN fields f ON s.field_id = f.id
+         WHERE b.id = ANY($1) AND f.campaign_id = $2`,
+        [bookingIds, campaignId]
+      );
+      if (parseInt(ownershipCheck.rows[0].cnt) !== bookingIds.length) {
+        return sendError(res, 403, ErrorCode.FORBIDDEN, 'Some bookings do not belong to your campaign');
+      }
+
+      const result = await api.bulkUpdateBookingStatus(bookingIds, status);
+
+      auditAPI.log({
+        eventType: status === 'confirmed' ? AUDIT_EVENTS.BOOKING_BULK_CONFIRMED : AUDIT_EVENTS.BOOKING_BULK_REJECTED,
+        actorId: req.userId!,
+        resourceType: 'booking',
+        metadata: { count: result.updated, bookingIds, campaignId },
+      }).catch(() => {});
+
+      res.json(result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   // PUT /booking/:id — изменить статус брони (только владелец campaign)
   router.put(
     '/:id',

@@ -138,6 +138,7 @@ export interface SlotWithBooking extends BookingSlot {
     status: BookingStatus;
     user_name: string | null;   // из профиля или contact_name
     user_phone: string | null;  // из профиля или contact_phone
+    is_registered: boolean;     // true = зарегистрирован в системе
   } | null;
 }
 
