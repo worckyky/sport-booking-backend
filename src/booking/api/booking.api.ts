@@ -12,6 +12,7 @@ import {
   FieldDaySchedule,
   FieldWorkingTimetable,
   DayOfWeek,
+  CalendarData,
   CampaignStats,
   RevenueByDay,
   HeatmapCell,
@@ -1176,6 +1177,56 @@ export class BookingAPI {
       [slotId]
     );
     return result.rows[0] || null;
+  }
+
+  // ==================== CALENDAR DATA ====================
+
+  /**
+   * Консолидированный запрос для календаря.
+   * Возвращает fields + slots + timezone + stats за один вызов.
+   */
+  async getCalendarData(campaignId: string, date: string): Promise<CalendarData> {
+    // 1. Получить timezone кампании
+    const campaignResult = await this.db.query<{ timezone_id: string }>(
+      'SELECT timezone_id FROM campaign_info WHERE id = $1',
+      [campaignId]
+    );
+    if (campaignResult.rows.length === 0) {
+      throw new Error('Campaign not found');
+    }
+    const timezone = campaignResult.rows[0].timezone_id || 'Europe/Moscow';
+
+    // 2. Получить активные поля
+    const fields = await this.getFieldsByCampaign(campaignId);
+    const activeFields = fields.filter(f => f.status === 'active');
+
+    // 3. Параллельно загрузить слоты для всех полей (переиспользуем существующую логику)
+    const slotsEntries = await Promise.all(
+      activeFields.map(async (field) => {
+        const fieldSlots = await this.getSlotsByFieldAndDate(field.id, date);
+        return [field.id, fieldSlots] as [string, SlotWithBooking[]];
+      })
+    );
+    const slots: Record<string, SlotWithBooking[]> = Object.fromEntries(slotsEntries);
+
+    // 4. Считаем stats из загруженных слотов
+    let pending = 0, confirmed = 0, completed = 0;
+    for (const fieldSlots of Object.values(slots)) {
+      for (const slot of fieldSlots) {
+        if (slot.booking) {
+          if (slot.booking.status === 'pending') pending++;
+          else if (slot.booking.status === 'confirmed') confirmed++;
+          else if (slot.booking.status === 'completed') completed++;
+        }
+      }
+    }
+
+    return {
+      fields: activeFields,
+      slots,
+      timezone,
+      stats: { pending, confirmed, completed },
+    };
   }
 
   // ==================== BOOKINGS ====================

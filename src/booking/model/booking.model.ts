@@ -154,6 +154,15 @@ export interface BookingDetails extends Booking {
   campaign_timezone_id?: string;  // IANA timezone ID (e.g., 'Europe/Moscow')
 }
 
+// === Calendar Data (consolidated endpoint) ===
+
+export interface CalendarData {
+  fields: Field[];
+  slots: Record<string, SlotWithBooking[]>; // fieldId → slots
+  timezone: string;
+  stats: { pending: number; confirmed: number; completed: number };
+}
+
 // === Campaign Stats (dashboard aggregations) ===
 
 export interface MonthlyStats {

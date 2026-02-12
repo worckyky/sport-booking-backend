@@ -273,6 +273,35 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   });
 
+  // GET /booking/calendar-data?campaign_id=&date= — консолидированные данные для календаря
+  router.get(
+    '/calendar-data',
+    authMiddleware(db),
+    campaignOwnerMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const { campaign_id, date } = req.query;
+        if (!campaign_id || typeof campaign_id !== 'string') {
+          return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'campaign_id query parameter required', 'campaign_id');
+        }
+        if (!isValidUUID(campaign_id)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid campaign_id format', 'campaign_id');
+        }
+        if (!date || typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'date must be in YYYY-MM-DD format', 'date');
+        }
+        const data = await api.getCalendarData(campaign_id, date);
+        res.json(data);
+      } catch (error) {
+        const msg = (error as Error).message;
+        if (msg === 'Campaign not found') {
+          return sendError(res, 404, ErrorCode.NOT_FOUND, 'Campaign not found', 'campaign_id');
+        }
+        Errors.internal(res);
+      }
+    }
+  );
+
   // POST /booking/slots — создать слот (только владелец поля)
   router.post(
     '/slots',
