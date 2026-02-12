@@ -110,7 +110,7 @@ export type BookingStatus =
 export interface Booking {
   id: string;
   slot_id: string;
-  user_id: string | null;  // nullable для гостевых бронирований
+  user_id: string | null;  // у гостей тоже есть user_id (guest user record)
   status: BookingStatus;
   comment: string | null;
   contact_name: string | null;

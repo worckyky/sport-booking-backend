@@ -1491,7 +1491,7 @@ export class BookingAPI {
   /**
    * Создание брони администратором (владельцем площадки)
    * Бронь создаётся сразу со статусом confirmed
-   * user_id = NULL (клиент не в системе)
+   * Создаёт бронь от имени админа. Для гостей создаётся guest user по телефону.
    */
   async createAdminBooking(
     slotId: string,
