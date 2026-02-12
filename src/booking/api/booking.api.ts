@@ -49,6 +49,8 @@ export class ScheduleConflictError extends Error {
 export interface PaginationParams {
   page?: number;
   limit?: number;
+  status?: string;
+  field_id?: string;
 }
 
 export interface PaginatedResult<T> {
@@ -57,6 +59,7 @@ export interface PaginatedResult<T> {
     page: number;
     limit: number;
     total: number;
+    totalAll: number;
     totalPages: number;
   };
 }
@@ -1326,16 +1329,53 @@ export class BookingAPI {
     const limit = Math.min(Math.max(pagination?.limit || 50, 1), 100);
     const offset = (page - 1) * limit;
 
-    // Get total count
-    const countResult = await this.db.query(
-      `SELECT COUNT(*) as total
-       FROM bookings b
-       JOIN booking_slots s ON b.slot_id = s.id
-       JOIN fields f ON s.field_id = f.id
-       WHERE f.campaign_id = $1`,
-      [campaignId]
-    );
+    // Build dynamic WHERE clause for filters
+    const conditions = ['f.campaign_id = $1'];
+    const params: any[] = [campaignId];
+    let paramIdx = 2;
+
+    if (pagination?.status) {
+      // Support comma-separated statuses (e.g. "pending,confirmed")
+      const statuses = pagination.status.split(',').filter(Boolean);
+      if (statuses.length === 1) {
+        conditions.push(`b.status = $${paramIdx}`);
+        params.push(statuses[0]);
+        paramIdx++;
+      } else if (statuses.length > 1) {
+        conditions.push(`b.status = ANY($${paramIdx})`);
+        params.push(statuses);
+        paramIdx++;
+      }
+    }
+
+    if (pagination?.field_id) {
+      conditions.push(`f.id = $${paramIdx}`);
+      params.push(pagination.field_id);
+      paramIdx++;
+    }
+
+    const whereClause = conditions.join(' AND ');
+
+    const hasFilters = pagination?.status || pagination?.field_id;
+
+    // Get filtered count + unfiltered total in parallel
+    const countQueries = [
+      this.db.query(
+        `SELECT COUNT(*) as total FROM bookings b JOIN booking_slots s ON b.slot_id = s.id JOIN fields f ON s.field_id = f.id WHERE ${whereClause}`,
+        params
+      ),
+    ];
+    if (hasFilters) {
+      countQueries.push(
+        this.db.query(
+          `SELECT COUNT(*) as total FROM bookings b JOIN booking_slots s ON b.slot_id = s.id JOIN fields f ON s.field_id = f.id WHERE f.campaign_id = $1`,
+          [campaignId]
+        )
+      );
+    }
+    const [countResult, totalAllResult] = await Promise.all(countQueries);
     const total = parseInt(countResult.rows[0].total, 10);
+    const totalAll = totalAllResult ? parseInt(totalAllResult.rows[0].total, 10) : total;
 
     const result = await this.db.query(
       `SELECT
@@ -1352,10 +1392,10 @@ export class BookingAPI {
        JOIN booking_slots s ON b.slot_id = s.id
        JOIN fields f ON s.field_id = f.id
        LEFT JOIN users u ON b.user_id = u.id
-       WHERE f.campaign_id = $1
+       WHERE ${whereClause}
        ORDER BY s.date DESC, s.start_time DESC
-       LIMIT $2 OFFSET $3`,
-      [campaignId, limit, offset]
+       LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+      [...params, limit, offset]
     );
 
     return {
@@ -1364,6 +1404,7 @@ export class BookingAPI {
         page,
         limit,
         total,
+        totalAll,
         totalPages: Math.ceil(total / limit),
       },
     };
@@ -2030,6 +2071,7 @@ export class BookingAPI {
         page,
         limit,
         total,
+        totalAll: total,
         totalPages: Math.ceil(total / limit),
       },
     };
@@ -2164,6 +2206,21 @@ export class BookingAPI {
       }
     }
     return { minHour: minHour === 23 ? 8 : minHour, maxHour: maxHour === 0 ? 22 : maxHour };
+  }
+
+  async getPendingCount(campaignId: string): Promise<number> {
+    const result = await this.db.query(
+      `SELECT COUNT(*)::int as count
+       FROM bookings b
+       JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       WHERE f.campaign_id = $1
+         AND b.status = 'pending'
+         AND s.date >= CURRENT_DATE
+         AND f.deleted_at IS NULL`,
+      [campaignId]
+    );
+    return result.rows[0]?.count || 0;
   }
 
   async getCampaignStats(campaignId: string, timezoneId: string): Promise<CampaignStats> {

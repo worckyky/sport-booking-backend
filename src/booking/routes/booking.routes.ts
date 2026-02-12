@@ -419,6 +419,28 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   );
 
+  // GET /booking/pending-count?campaign_id= — количество pending бронирований (только владелец campaign)
+  router.get(
+    '/pending-count',
+    authMiddleware(db),
+    campaignOwnerMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const { campaign_id } = req.query;
+        if (!campaign_id || typeof campaign_id !== 'string') {
+          return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'campaign_id query parameter required', 'campaign_id');
+        }
+        if (!isValidUUID(campaign_id)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid campaign_id format', 'campaign_id');
+        }
+        const count = await api.getPendingCount(campaign_id);
+        res.json({ count });
+      } catch (error) {
+        Errors.internal(res);
+      }
+    }
+  );
+
   // ==================== BOOKINGS ====================
 
   // GET /booking/my — мои бронирования (авторизованный пользователь)
@@ -438,7 +460,7 @@ export default function createBookingRoutes(db: Pool): Router {
     campaignOwnerMiddleware(db),
     async (req: AuthRequest, res: Response) => {
       try {
-        const { campaign_id, page, limit } = req.query;
+        const { campaign_id, page, limit, status, field_id } = req.query;
         if (!campaign_id || typeof campaign_id !== 'string') {
           res.status(400).json({ error: 'campaign_id query parameter required' });
           return;
@@ -446,6 +468,8 @@ export default function createBookingRoutes(db: Pool): Router {
         const pagination = {
           page: page ? parseInt(page as string, 10) : undefined,
           limit: limit ? parseInt(limit as string, 10) : undefined,
+          status: status && typeof status === 'string' ? status : undefined,
+          field_id: field_id && typeof field_id === 'string' && isValidUUID(field_id) ? field_id : undefined,
         };
         const result = await api.getBookingsByCampaign(campaign_id, pagination);
         res.json(result);
