@@ -283,8 +283,9 @@ router.get(
       // Пагинация: limit (по умолчанию 100, макс 100), offset (по умолчанию 0)
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
       const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+      const search = req.query.search ? String(req.query.search).trim() : undefined;
 
-      const result = await campaignAPI.getClients(campaignId, limit, offset);
+      const result = await campaignAPI.getClients(campaignId, limit, offset, search);
       res.json(result);
     } catch (error) {
       if (error instanceof Error) {
@@ -293,6 +294,44 @@ router.get(
         } else {
           res.status(400).json({ error: error.message });
         }
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
+// GET /campaign/:id/client-stats?phone=7XXXXXXXXXX - Статистика клиента по телефону
+router.get(
+  '/:id/client-stats',
+  authMiddleware(db),
+  campaignRoleMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const campaignId = req.params.id;
+      const phone = req.query.phone ? String(req.query.phone).trim() : '';
+
+      if (!phone) {
+        res.status(400).json({ error: 'Phone is required' });
+        return;
+      }
+
+      const campaign = await campaignAPI.getCampaignById(campaignId);
+      if (campaign.userId !== req.userId) {
+        res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+
+      const stats = await campaignAPI.getClientStatsByPhone(campaignId, phone);
+      if (!stats) {
+        res.json({ total_bookings: 0, no_shows: 0, cancellations: 0, is_registered: false });
+        return;
+      }
+
+      res.json(stats);
+    } catch (error) {
+      if (error instanceof Error) {
+        res.status(400).json({ error: error.message });
       } else {
         res.status(500).json({ error: 'Internal server error' });
       }

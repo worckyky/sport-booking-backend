@@ -858,7 +858,8 @@ export class CampaignAPI {
   async getClients(
     campaignId: string,
     limit: number = 100,
-    offset: number = 0
+    offset: number = 0,
+    search?: string
   ): Promise<{
     clients: {
       id: string;
@@ -879,6 +880,16 @@ export class CampaignAPI {
 
     // Единый запрос для всех клиентов (registered + guests)
     // Гости теперь тоже имеют user_id, отличаются по email/password_hash = NULL
+    const searchCondition = search
+      ? `HAVING (
+          u.name ILIKE $4 || '%'
+          OR u.phone LIKE '%' || $4 || '%'
+          OR MAX(b.contact_name) ILIKE $4 || '%'
+        )`
+      : '';
+    const params: (string | number)[] = [campaignId, safeLimit, safeOffset];
+    if (search) params.push(search);
+
     const result = await this.db.query<{
       id: string;
       name: string | null;
@@ -910,6 +921,7 @@ export class CampaignAPI {
           WHERE f.campaign_id = $1
             AND b.status IN ('confirmed', 'completed')
           GROUP BY u.id, u.email, u.phone, u.password_hash
+          ${searchCondition}
         )
         SELECT
           *,
@@ -918,7 +930,7 @@ export class CampaignAPI {
         ORDER BY last_booking_date DESC NULLS LAST
         LIMIT $2 OFFSET $3
       `,
-      [campaignId, safeLimit, safeOffset]
+      params
     );
 
     const total = result.rows.length > 0 ? parseInt(result.rows[0].total_count, 10) : 0;
@@ -1005,6 +1017,48 @@ export class CampaignAPI {
       bookings_count: parseInt(row.bookings_count, 10),
       last_booking_date: row.last_booking_date,
       first_booking_date: row.first_booking_date,
+      is_registered: row.is_registered,
+    };
+  }
+
+  /**
+   * Получить статистику клиента по телефону (для контекста при approve)
+   */
+  async getClientStatsByPhone(campaignId: string, phone: string): Promise<{
+    total_bookings: number;
+    no_shows: number;
+    cancellations: number;
+    is_registered: boolean;
+  } | null> {
+    const result = await this.db.query<{
+      total_bookings: string;
+      no_shows: string;
+      cancellations: string;
+      is_registered: boolean;
+    }>(
+      `
+        SELECT
+          COUNT(DISTINCT b.id) as total_bookings,
+          COUNT(DISTINCT CASE WHEN b.status = 'no_show' THEN b.id END) as no_shows,
+          COUNT(DISTINCT CASE WHEN b.status IN ('cancelled_by_client', 'cancelled_by_facility') THEN b.id END) as cancellations,
+          (u.email IS NOT NULL AND u.password_hash IS NOT NULL) as is_registered
+        FROM users u
+        INNER JOIN bookings b ON b.user_id = u.id
+        INNER JOIN booking_slots s ON s.id = b.slot_id
+        INNER JOIN fields f ON f.id = s.field_id
+        WHERE f.campaign_id = $1 AND u.phone = $2
+        GROUP BY u.id, u.email, u.password_hash
+      `,
+      [campaignId, phone]
+    );
+
+    if (result.rowCount === 0) return null;
+
+    const row = result.rows[0];
+    return {
+      total_bookings: parseInt(row.total_bookings, 10),
+      no_shows: parseInt(row.no_shows, 10),
+      cancellations: parseInt(row.cancellations, 10),
       is_registered: row.is_registered,
     };
   }
