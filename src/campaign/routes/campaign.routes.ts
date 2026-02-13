@@ -91,7 +91,7 @@ router.get(
         return;
       }
 
-      const campaign = await campaignAPI.getCampaignById(campaignId);
+      const campaign = await campaignAPI.getPublicCampaignById(campaignId);
       res.json(campaign);
     } catch (error) {
       if (error instanceof Error) {

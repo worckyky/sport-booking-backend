@@ -29,9 +29,43 @@ export class CampaignAPI {
     return rows.map((r) => r.sport);
   }
 
+  private async getSportsByCampaignIds(campaignIds: string[]): Promise<Map<string, string[]>> {
+    if (campaignIds.length === 0) return new Map();
+
+    const { rows } = await this.db.query<{ campaign_id: string; sports: string[] }>(
+      `
+        SELECT f.campaign_id, array_agg(DISTINCT s.sport ORDER BY s.sport) as sports
+        FROM fields f, unnest(f.sport_types) as s(sport)
+        WHERE f.campaign_id = ANY($1) AND f.status = 'active'
+        GROUP BY f.campaign_id
+      `,
+      [campaignIds]
+    );
+
+    const map = new Map<string, string[]>();
+    for (const row of rows) {
+      map.set(row.campaign_id, row.sports);
+    }
+    return map;
+  }
+
   async getCampaignById(campaignId: string): Promise<CampaignResponse> {
     const { rows } = await this.db.query<Campaign>(
       'select * from campaign_info where id = $1 limit 1',
+      [campaignId]
+    );
+    const data = rows[0];
+    if (!data) {
+      throw new Error('Campaign not found');
+    }
+
+    const sports = await this.getSportsByCampaignId(campaignId);
+    return this.mapCampaignToResponse(data, sports);
+  }
+
+  async getPublicCampaignById(campaignId: string): Promise<CampaignResponse> {
+    const { rows } = await this.db.query<Campaign>(
+      "SELECT * FROM campaign_info WHERE id = $1 AND status = 'published' LIMIT 1",
       [campaignId]
     );
     const data = rows[0];
@@ -51,12 +85,10 @@ export class CampaignAPI {
        ORDER BY created_at DESC
        LIMIT 1000`
     );
-    const results: CampaignResponse[] = [];
-    for (const campaign of rows) {
-      const sports = await this.getSportsByCampaignId(campaign.id);
-      results.push(this.mapCampaignToResponse(campaign, sports));
-    }
-    return results;
+    const sportsMap = await this.getSportsByCampaignIds(rows.map(c => c.id));
+    return rows.map(campaign =>
+      this.mapCampaignToResponse(campaign, sportsMap.get(campaign.id) || [])
+    );
   }
 
   /**
@@ -91,20 +123,18 @@ export class CampaignAPI {
        ORDER BY ci.created_at DESC`
     );
 
-    const results: AdminCampaignResponse[] = [];
-    for (const row of rows) {
-      const sports = await this.getSportsByCampaignId(row.id);
-      const base = this.mapCampaignToResponse(row, sports);
-      results.push({
+    const sportsMap = await this.getSportsByCampaignIds(rows.map(r => r.id));
+    return rows.map(row => {
+      const base = this.mapCampaignToResponse(row, sportsMap.get(row.id) || []);
+      return {
         ...base,
         ownerName: row.owner_name ?? null,
         ownerEmail: row.owner_email ?? null,
         ownerId: row.owner_id ?? null,
         fieldsCount: parseInt(row.fields_count, 10) || 0,
         bookingsCount: parseInt(row.bookings_count, 10) || 0,
-      });
-    }
-    return results;
+      };
+    });
   }
 
   async createCampaign(
@@ -533,27 +563,7 @@ export class CampaignAPI {
    * Подать площадку на модерацию (draft → pending)
    */
   async submitForModeration(campaignId: string, userId: string): Promise<CampaignResponse> {
-    // Проверить владельца
-    const campaignResult = await this.db.query<Campaign>(
-      'SELECT * FROM campaign_info WHERE id = $1',
-      [campaignId]
-    );
-
-    if (campaignResult.rowCount === 0) {
-      throw new Error('Campaign not found');
-    }
-
-    const campaign = campaignResult.rows[0];
-
-    if (campaign.user_id !== userId) {
-      throw new Error('Access denied');
-    }
-
-    if (campaign.status !== CampaignStatus.DRAFT) {
-      throw new Error('Campaign can only be submitted from draft status');
-    }
-
-    // Проверить готовность
+    // Проверить готовность до транзакции (read-only, не требует блокировки)
     const readiness = await this.getCampaignReadiness(campaignId);
     if (!readiness.ready) {
       const missing = readiness.items.filter(i => !i.done).map(i => ({ key: i.key, label: i.label }));
@@ -563,8 +573,46 @@ export class CampaignAPI {
       throw error;
     }
 
-    // draft → pending, очистить moderation_comment
-    return this.updateCampaignStatus(campaignId, CampaignStatus.PENDING, userId);
+    const updated = await withTransaction(this.db, async (client) => {
+      // SELECT FOR UPDATE — блокирует строку, защита от double-submit
+      const campaignResult = await client.query<Campaign>(
+        'SELECT * FROM campaign_info WHERE id = $1 FOR UPDATE',
+        [campaignId]
+      );
+
+      if (campaignResult.rowCount === 0) {
+        throw new Error('Campaign not found');
+      }
+
+      const campaign = campaignResult.rows[0];
+
+      if (campaign.user_id !== userId) {
+        throw new Error('Access denied');
+      }
+
+      if (campaign.status !== CampaignStatus.DRAFT) {
+        throw new Error('Campaign can only be submitted from draft status');
+      }
+
+      const now = new Date().toISOString();
+      const updatedResult = await client.query<Campaign>(
+        `UPDATE campaign_info
+         SET status = $1, moderation_comment = NULL, moderation_at = NULL, updated_at = $2
+         WHERE id = $3
+         RETURNING *`,
+        [CampaignStatus.PENDING, now, campaignId]
+      );
+
+      await this.logStatusChange(
+        campaignId, CampaignStatus.DRAFT, CampaignStatus.PENDING,
+        userId, 'Submitted for moderation', client
+      );
+
+      return updatedResult.rows[0];
+    });
+
+    const sports = await this.getSportsByCampaignId(campaignId);
+    return this.mapCampaignToResponse(updated, sports);
   }
 
   /**
@@ -771,12 +819,10 @@ export class CampaignAPI {
       `;
 
       const { rows } = await this.db.query<Campaign>(query, values);
-      const results: CampaignResponse[] = [];
-      for (const campaign of rows) {
-        const sports = await this.getSportsByCampaignId(campaign.id);
-        results.push(this.mapCampaignToResponse(campaign, sports));
-      }
-      return results;
+      const sportsMap = await this.getSportsByCampaignIds(rows.map(c => c.id));
+      return rows.map(campaign =>
+        this.mapCampaignToResponse(campaign, sportsMap.get(campaign.id) || [])
+      );
     }
 
     // Simple query without date filter
@@ -821,12 +867,10 @@ export class CampaignAPI {
     `;
 
     const { rows } = await this.db.query<Campaign>(query, values);
-    const results: CampaignResponse[] = [];
-    for (const campaign of rows) {
-      const sports = await this.getSportsByCampaignId(campaign.id);
-      results.push(this.mapCampaignToResponse(campaign, sports));
-    }
-    return results;
+    const sportsMap = await this.getSportsByCampaignIds(rows.map(c => c.id));
+    return rows.map(campaign =>
+      this.mapCampaignToResponse(campaign, sportsMap.get(campaign.id) || [])
+    );
   }
 
   private mapCampaignToResponse(campaign: Campaign, sports: string[]): CampaignResponse {
