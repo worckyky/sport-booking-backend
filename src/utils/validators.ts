@@ -1,5 +1,15 @@
 import { PaymentMethod, Facility, Sport } from '../campaign/model/campaign.model';
 
+// ==================== Password Validator ====================
+
+export function validatePassword(password: string): string | null {
+  if (password.length < 8) return 'Пароль должен содержать минимум 8 символов';
+  if (password.length > 128) return 'Пароль слишком длинный';
+  if (!/[a-zA-Zа-яА-ЯёЁ]/.test(password)) return 'Пароль должен содержать хотя бы одну букву';
+  if (!/\d/.test(password)) return 'Пароль должен содержать хотя бы одну цифру';
+  return null;
+}
+
 // ==================== Enum Validators ====================
 
 const PAYMENT_METHODS = new Set(Object.values(PaymentMethod));

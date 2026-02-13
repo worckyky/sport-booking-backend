@@ -61,7 +61,7 @@ export class AuthAPI {
     const email = credentials.email.trim().toLowerCase();
     const role = credentials.role ?? USER_ROLE.USER;
     const id = crypto.randomUUID();
-    const passwordHash = await bcrypt.hash(credentials.password, 10);
+    const passwordHash = await bcrypt.hash(credentials.password, 12);
     const now = new Date().toISOString();
 
     const campaignName = (() => {
@@ -267,7 +267,7 @@ export class AuthAPI {
       throw new Error('Invalid or expired token');
     }
 
-    const newHash = await bcrypt.hash(password, 10);
+    const newHash = await bcrypt.hash(password, 12);
     const userId = tokenRow.rows[0].user_id;
 
     await this.db.query('update users set password_hash = $1, updated_at = now() where id = $2', [

@@ -206,7 +206,7 @@ export class InvitationAPI {
 
       // 3. Создать пользователя
       const userId = crypto.randomUUID();
-      const passwordHash = await bcrypt.hash(password, 10);
+      const passwordHash = await bcrypt.hash(password, 12);
       const now = new Date().toISOString();
 
       await client.query(

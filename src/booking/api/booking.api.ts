@@ -1007,6 +1007,24 @@ export class BookingAPI {
         : [];
     }
 
+    // Удаляем незабронированные слоты, не совпадающие с текущей сеткой
+    // (защита от overlap при смене slot_duration или расписания)
+    const newStartTimes = slots.map(s => s.start_time);
+    if (newStartTimes.length > 0) {
+      const stPlaceholders = newStartTimes.map((_, i) => `$${i + 3}`).join(', ');
+      await this.db.query(
+        `DELETE FROM booking_slots
+         WHERE field_id = $1 AND date = $2
+         AND start_time NOT IN (${stPlaceholders})
+         AND NOT EXISTS (
+           SELECT 1 FROM bookings b
+           WHERE b.slot_id = booking_slots.id
+           AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         )`,
+        [fieldId, date, ...newStartTimes]
+      );
+    }
+
     // INSERT missing slots (ON CONFLICT DO NOTHING — не трогаем существующие)
     const placeholders: string[] = [];
     const values: (string | boolean | null)[] = [];
@@ -1473,7 +1491,8 @@ export class BookingAPI {
     return this.withTransaction(async (client) => {
       // Проверяем что слот существует, не заблокирован и свободен
       const slotQuery = await client.query(
-        `SELECT s.id, s.is_blocked, f.name as field_name, f.price_per_hour, f.sport_types,
+        `SELECT s.id, s.field_id, s.date, s.start_time, s.end_time, s.is_blocked,
+                f.name as field_name, f.price_per_hour, f.sport_types,
                 c.status as campaign_status, c.timezone_id,
                 (s.date < (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
                  OR (s.date = (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
@@ -1512,6 +1531,22 @@ export class BookingAPI {
 
       if (existing.rows.length > 0) {
         throw new Error('Slot already booked');
+      }
+
+      // Проверяем overlap — нет ли активной брони на том же поле в пересекающееся время
+      const overlap = await client.query(
+        `SELECT b.id FROM bookings b
+         JOIN booking_slots s ON b.slot_id = s.id
+         WHERE s.field_id = $1 AND s.date = $2
+         AND s.start_time < $3 AND s.end_time > $4
+         AND b.slot_id != $5
+         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         LIMIT 1`,
+        [slot.field_id, slot.date, slot.end_time, slot.start_time, slotId]
+      );
+
+      if (overlap.rows.length > 0) {
+        throw new Error('Time slot overlaps with existing booking');
       }
 
       // Денормализуем данные поля для статистики
@@ -1549,7 +1584,8 @@ export class BookingAPI {
     return this.withTransaction(async (client) => {
       // Проверяем что слот существует, не заблокирован и свободен
       const slotQuery = await client.query(
-        `SELECT s.id, s.is_blocked, f.name as field_name, f.price_per_hour, f.sport_types,
+        `SELECT s.id, s.field_id, s.date, s.start_time, s.end_time, s.is_blocked,
+                f.name as field_name, f.price_per_hour, f.sport_types,
                 c.status as campaign_status, c.timezone_id,
                 (s.date < (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
                  OR (s.date = (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
@@ -1588,6 +1624,22 @@ export class BookingAPI {
 
       if (existing.rows.length > 0) {
         throw new Error('Slot already booked');
+      }
+
+      // Проверяем overlap — нет ли активной брони на том же поле в пересекающееся время
+      const overlap = await client.query(
+        `SELECT b.id FROM bookings b
+         JOIN booking_slots s ON b.slot_id = s.id
+         WHERE s.field_id = $1 AND s.date = $2
+         AND s.start_time < $3 AND s.end_time > $4
+         AND b.slot_id != $5
+         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         LIMIT 1`,
+        [slot.field_id, slot.date, slot.end_time, slot.start_time, slotId]
+      );
+
+      if (overlap.rows.length > 0) {
+        throw new Error('Time slot overlaps with existing booking');
       }
 
       // Денормализуем данные поля
@@ -1859,6 +1911,8 @@ export class BookingAPI {
       slot_id: string;
       slot_date: string;
       start_time: string;
+      end_time: string;
+      field_id: string;
       is_blocked: boolean;
       block_reason: string | null;
       field_name: string;
@@ -1866,7 +1920,8 @@ export class BookingAPI {
       sport_types: string[];
       new_campaign_id: string;
     }>(
-      `SELECT s.id as slot_id, s.date as slot_date, s.start_time, s.is_blocked, s.block_reason,
+      `SELECT s.id as slot_id, s.field_id, s.date as slot_date, s.start_time, s.end_time,
+              s.is_blocked, s.block_reason,
               f.name as field_name, f.price_per_hour as field_price, f.sport_types,
               f.campaign_id as new_campaign_id
        FROM booking_slots s
@@ -1923,6 +1978,23 @@ export class BookingAPI {
 
       if (existingBooking.rows.length > 0) {
         throw new Error('New slot is already booked');
+      }
+
+      // Проверяем overlap — нет ли активной брони на том же поле в пересекающееся время
+      const overlap = await client.query(
+        `SELECT b.id FROM bookings b
+         JOIN booking_slots s ON b.slot_id = s.id
+         WHERE s.field_id = $1 AND s.date = $2
+         AND s.start_time < $3 AND s.end_time > $4
+         AND b.slot_id != $5
+         AND b.id != $6
+         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         LIMIT 1`,
+        [newSlot.field_id, newSlot.slot_date, newSlot.end_time, newSlot.start_time, newSlotId, bookingId]
+      );
+
+      if (overlap.rows.length > 0) {
+        throw new Error('Time slot overlaps with existing booking');
       }
 
       // Запись в историю

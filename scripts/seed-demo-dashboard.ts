@@ -425,7 +425,7 @@ async function main() {
       throw new Error('Base seed not found! Run: npm run seed');
     }
 
-    const passwordHash = await bcrypt.hash('demo123', 10);
+    const passwordHash = await bcrypt.hash('demo123', 12);
 
     // ================================================================
     // STEP 1: Update existing campaigns + clean old data

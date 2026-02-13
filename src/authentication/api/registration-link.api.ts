@@ -139,7 +139,7 @@ export class RegistrationLinkAPI {
 
       // 4. Создать пользователя
       const userId = crypto.randomUUID();
-      const passwordHash = await bcrypt.hash(password, 10);
+      const passwordHash = await bcrypt.hash(password, 12);
 
       await client.query(
         `INSERT INTO users (id, email, password_hash, role, name, phone, email_verified, campaign_id, created_at, updated_at)

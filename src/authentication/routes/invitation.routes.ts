@@ -7,6 +7,7 @@ import { campaignRoleMiddleware } from '../../campaign/middleware/campaign.middl
 import { canInviteMiddleware } from '../middleware/can-invite.middleware';
 import { USER_ROLE } from '../model/auth.model';
 import { AUTH_COOKIE_NAME, AUTH_TOKEN_TTL_SECONDS } from '../../config/auth';
+import { validatePassword } from '../../utils/validators';
 
 export function createInvitationRoutes(db: Pool): Router {
   const router = Router();
@@ -46,8 +47,9 @@ export function createInvitationRoutes(db: Pool): Router {
         return res.status(400).json({ error: 'Token and password are required' });
       }
 
-      if (password.length < 6) {
-        return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      const pwError = validatePassword(password);
+      if (pwError) {
+        return res.status(400).json({ error: pwError });
       }
 
       const result = await api.acceptInvitation(
@@ -64,7 +66,7 @@ export function createInvitationRoutes(db: Pool): Router {
       res.cookie(AUTH_COOKIE_NAME, result.accessToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
+        sameSite: 'strict',
         maxAge: AUTH_TOKEN_TTL_SECONDS * 1000,
         path: '/'
       });

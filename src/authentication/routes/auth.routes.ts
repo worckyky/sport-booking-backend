@@ -18,6 +18,7 @@ import { adminMiddleware } from '../middleware/admin.middleware';
 import { bruteForcePrevention, recordLoginAttempt } from '../middleware/brute-force.middleware';
 import type { DbUser } from '../model/user.model';
 import { AuditAPI, AUDIT_EVENTS } from '../../audit/audit.api';
+import { validatePassword } from '../../utils/validators';
 
 export class AuthRoutes {
   private router: Router;
@@ -166,6 +167,11 @@ export class AuthRoutes {
 
         if (!email || !password) {
           return res.status(400).json({ error: 'Email and password are required' });
+        }
+
+        const pwError = validatePassword(password);
+        if (pwError) {
+          return res.status(400).json({ error: pwError });
         }
 
         if (role !== undefined && !Object.values(USER_ROLE).includes(role)) {
@@ -317,6 +323,11 @@ export class AuthRoutes {
 
         if (!password || !confirmPassword) {
           return res.status(400).json({ error: 'Password and confirm password are required' });
+        }
+
+        const pwError = validatePassword(password);
+        if (pwError) {
+          return res.status(400).json({ error: pwError });
         }
 
         if (!access_token) {
