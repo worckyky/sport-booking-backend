@@ -880,15 +880,24 @@ export class CampaignAPI {
 
     // Единый запрос для всех клиентов (registered + guests)
     // Гости теперь тоже имеют user_id, отличаются по email/password_hash = NULL
-    const searchCondition = search
-      ? `HAVING (
-          u.name ILIKE $4 || '%'
-          OR u.phone LIKE '%' || $4 || '%'
-          OR MAX(b.contact_name) ILIKE $4 || '%'
-        )`
-      : '';
+    const searchTrimmed = search?.trim() || '';
+    const searchDigits = searchTrimmed.replace(/\D/g, '');
+    const hasPhoneDigits = searchDigits.length >= 3;
+
+    let searchCondition = '';
+    if (searchTrimmed) {
+      const phonePart = hasPhoneDigits ? `OR u.phone LIKE '%' || $5 || '%'` : '';
+      searchCondition = `HAVING (
+        u.name ILIKE '%' || $4 || '%'
+        OR MAX(b.contact_name) ILIKE '%' || $4 || '%'
+        ${phonePart}
+      )`;
+    }
     const params: (string | number)[] = [campaignId, safeLimit, safeOffset];
-    if (search) params.push(search);
+    if (searchTrimmed) {
+      params.push(searchTrimmed);
+      if (hasPhoneDigits) params.push(searchDigits);
+    }
 
     const result = await this.db.query<{
       id: string;
