@@ -123,9 +123,25 @@ async function start(): Promise<void> {
   });
 
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
+
+  // Graceful shutdown
+  const shutdown = async (signal: string) => {
+    console.log(`${signal} received, shutting down...`);
+    server.close(() => {
+      db.end().then(() => {
+        console.log('Pool closed');
+        process.exit(0);
+      });
+    });
+    // Force exit after 10s if graceful shutdown stalls
+    setTimeout(() => process.exit(1), 10000);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 start().catch((error: unknown) => {
