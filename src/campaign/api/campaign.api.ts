@@ -12,9 +12,146 @@ import {
 } from '../model/campaign.model';
 import { normalizeEnumArray, normalizeJsonArray, toJsonbValue } from '../../utils/pg';
 import { withTransaction } from '../../utils/db-transaction';
+import { S3API } from '../../s3/api/s3.api';
 
 export class CampaignAPI {
+  private readonly s3API = new S3API();
+
   constructor(private db: Pool) {}
+
+  private normalizeMediaShape(media: unknown): Campaign['media'] {
+    if (!media || typeof media !== 'object') return null;
+
+    const src = media as Record<string, unknown>;
+    const photos = Array.isArray(src.photos)
+      ? src.photos.filter((p): p is string => typeof p === 'string')
+      : [];
+    const mainSrc = typeof src.main_src === 'string'
+      ? src.main_src
+      : (photos[0] || '');
+    const description = typeof src.description === 'string' ? src.description : '';
+    const extra = Array.isArray(src.extra_media)
+      ? src.extra_media
+        .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+        .map((item) => ({
+          src: typeof item.src === 'string' ? item.src : '',
+          description: typeof item.description === 'string' ? item.description : '',
+        }))
+      : [];
+
+    return {
+      main_src: mainSrc,
+      description,
+      extra_media: extra,
+    };
+  }
+
+  private getMediaUrls(media: Campaign['media']): string[] {
+    const normalized = this.normalizeMediaShape(media);
+    if (!normalized) return [];
+
+    return [
+      normalized.main_src || '',
+      ...(normalized.extra_media || []).map((item) => item.src || ''),
+    ].filter((value): value is string => typeof value === 'string' && value.length > 0);
+  }
+
+  private extractBucketKeyFromUrl(url: string): { bucket: string; key: string } | null {
+    try {
+      const parsed = new URL(url);
+      const path = decodeURIComponent(parsed.pathname || '');
+      const proxyMarker = '/s3/public/';
+      const proxyIndex = path.indexOf(proxyMarker);
+      if (proxyIndex >= 0) {
+        const rest = path.slice(proxyIndex + proxyMarker.length);
+        const slashIndex = rest.indexOf('/');
+        if (slashIndex > 0 && slashIndex < rest.length - 1) {
+          return {
+            bucket: rest.slice(0, slashIndex),
+            key: rest.slice(slashIndex + 1),
+          };
+        }
+      }
+
+      const directParts = path.split('/').filter(Boolean);
+      if (directParts.length >= 2) {
+        return {
+          bucket: directParts[0],
+          key: directParts.slice(1).join('/'),
+        };
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private extractManagedMediaByBucket(media: Campaign['media']): Map<string, Set<string>> {
+    const map = new Map<string, Set<string>>();
+    const parsed = this.getMediaUrls(media)
+      .map((url) => this.extractBucketKeyFromUrl(url))
+      .filter((item): item is { bucket: string; key: string } => item !== null)
+      .filter((item) => item.key.startsWith('images/'));
+
+    for (const item of parsed) {
+      if (!map.has(item.bucket)) {
+        map.set(item.bucket, new Set());
+      }
+      map.get(item.bucket)!.add(item.key);
+    }
+
+    return map;
+  }
+
+  private async deleteManagedMediaDiff(
+    beforeMedia: Campaign['media'],
+    afterMedia: Campaign['media'],
+    keepMedia?: Campaign['media']
+  ): Promise<void> {
+    const beforeByBucket = this.extractManagedMediaByBucket(beforeMedia);
+    const afterByBucket = this.extractManagedMediaByBucket(afterMedia);
+    const keepByBucket = keepMedia ? this.extractManagedMediaByBucket(keepMedia) : new Map<string, Set<string>>();
+
+    for (const [bucket, beforeKeysSet] of beforeByBucket.entries()) {
+      const afterKeysSet = afterByBucket.get(bucket) || new Set<string>();
+      const keepKeysSet = keepByBucket.get(bucket) || new Set<string>();
+      const keysToDelete = [...beforeKeysSet].filter((key) => !afterKeysSet.has(key) && !keepKeysSet.has(key));
+
+      if (keysToDelete.length === 0) continue;
+
+      try {
+        await this.s3API.deleteObjects({
+          bucket,
+          keys: keysToDelete,
+        });
+      } catch (error) {
+        console.error(`Failed to cleanup old media objects in bucket ${bucket}:`, error);
+      }
+    }
+  }
+
+  private applyPendingOverlay(campaign: Campaign): Campaign {
+    const pending = campaign.pending_changes;
+    if (!pending || typeof pending !== 'object') {
+      return campaign;
+    }
+
+    const result: Campaign = { ...campaign };
+    const pendingObj = pending as Record<string, unknown>;
+
+    if (typeof pendingObj.name === 'string') {
+      result.name = pendingObj.name;
+    }
+    if (pendingObj.location && typeof pendingObj.location === 'object') {
+      result.location = pendingObj.location as Campaign['location'];
+    }
+    if (pendingObj.media && typeof pendingObj.media === 'object') {
+      result.media = this.normalizeMediaShape(pendingObj.media);
+    }
+
+    return result;
+  }
 
   private async getSportsByCampaignId(campaignId: string): Promise<string[]> {
     const { rows } = await this.db.query<{ sport: string }>(
@@ -61,6 +198,21 @@ export class CampaignAPI {
 
     const sports = await this.getSportsByCampaignId(campaignId);
     return this.mapCampaignToResponse(data, sports);
+  }
+
+  async getCampaignByIdForOwner(campaignId: string, userId: string): Promise<CampaignResponse> {
+    const { rows } = await this.db.query<Campaign>(
+      'select * from campaign_info where id = $1 and user_id = $2 limit 1',
+      [campaignId, userId]
+    );
+    const data = rows[0];
+    if (!data) {
+      throw new Error('Campaign not found');
+    }
+
+    const sports = await this.getSportsByCampaignId(campaignId);
+    const effectiveCampaign = this.applyPendingOverlay(data);
+    return this.mapCampaignToResponse(effectiveCampaign, sports);
   }
 
   async getPublicCampaignById(campaignId: string): Promise<CampaignResponse> {
@@ -279,7 +431,7 @@ export class CampaignAPI {
   ): Promise<CampaignResponse> {
     // Get current campaign status
     const currentResult = await this.db.query<Campaign>(
-      'SELECT status, pending_changes FROM campaign_info WHERE id = $1 AND user_id = $2',
+      'SELECT status, pending_changes, media FROM campaign_info WHERE id = $1 AND user_id = $2',
       [campaignId, userId]
     );
     if (currentResult.rowCount === 0) throw new Error('Campaign not found or not updated');
@@ -292,12 +444,20 @@ export class CampaignAPI {
     let dataToApply = campaignData;
     let pendingChanges: Record<string, unknown> | null = null;
 
+    let replacedPendingMediaBefore: Campaign['media'] | null = null;
+    let replacedPendingMediaAfter: Campaign['media'] | null = null;
+    const currentActiveMedia = this.normalizeMediaShape(currentResult.rows[0].media);
+
     if (currentStatus === CampaignStatus.PUBLISHED) {
       const { critical, nonCritical } = this.extractCriticalChanges(campaignData);
       if (Object.keys(critical).length > 0) {
         // Merge with existing pending_changes
         const existingPending = currentResult.rows[0].pending_changes ?? {};
         pendingChanges = { ...existingPending, ...critical };
+
+        const existingPendingObj = existingPending as Record<string, unknown>;
+        replacedPendingMediaBefore = this.normalizeMediaShape(existingPendingObj.media);
+        replacedPendingMediaAfter = this.normalizeMediaShape((pendingChanges as Record<string, unknown>).media);
       }
       dataToApply = nonCritical;
     }
@@ -377,8 +537,16 @@ export class CampaignAPI {
     );
 
     if (updated.rowCount === 0) throw new Error('Campaign not found or not updated');
+
+    if (currentStatus === CampaignStatus.PUBLISHED && replacedPendingMediaBefore && replacedPendingMediaAfter) {
+      // User may update pending media several times before moderation.
+      // Remove obsolete pending objects, but keep anything still used by active media.
+      await this.deleteManagedMediaDiff(replacedPendingMediaBefore, replacedPendingMediaAfter, currentActiveMedia);
+    }
+
     const sports = await this.getSportsByCampaignId(campaignId);
-    return this.mapCampaignToResponse(updated.rows[0], sports);
+    const effectiveCampaign = this.applyPendingOverlay(updated.rows[0]);
+    return this.mapCampaignToResponse(effectiveCampaign, sports);
   }
 
   async deleteCampaign(campaignId: string, userId: string): Promise<void> {
@@ -655,7 +823,9 @@ export class CampaignAPI {
       throw new Error('No pending changes');
     }
 
-    const pending = campaign.pending_changes;
+    const pending = campaign.pending_changes as Record<string, unknown>;
+    const currentMedia = this.normalizeMediaShape(campaign.media);
+    const pendingMedia = this.normalizeMediaShape(pending.media);
     const setParts: string[] = [];
     const values: unknown[] = [];
     let i = 1;
@@ -691,6 +861,13 @@ export class CampaignAPI {
     // Audit log (no status change, just changes approved)
     await this.logStatusChange(campaignId, campaign.status, campaign.status, userId, 'Changes approved');
 
+    const updatedMedia = this.normalizeMediaShape(updated.rows[0].media);
+    const targetMedia = updatedMedia || pendingMedia;
+    if (currentMedia && targetMedia) {
+      // After approve, old active media can be removed if not referenced anymore.
+      await this.deleteManagedMediaDiff(currentMedia, targetMedia);
+    }
+
     const sports = await this.getSportsByCampaignId(campaignId);
     return this.mapCampaignToResponse(updated.rows[0], sports);
   }
@@ -707,6 +884,10 @@ export class CampaignAPI {
       throw new Error('No pending changes');
     }
 
+    const pending = campaign.pending_changes as Record<string, unknown>;
+    const currentMedia = this.normalizeMediaShape(campaign.media);
+    const pendingMedia = this.normalizeMediaShape(pending.media);
+
     const now = new Date().toISOString();
     const updated = await this.db.query<Campaign>(
       `UPDATE campaign_info
@@ -722,6 +903,11 @@ export class CampaignAPI {
     // Audit log
     const reason = comment ? `Changes rejected: ${comment}` : 'Changes rejected';
     await this.logStatusChange(campaignId, campaign.status, campaign.status, userId, reason);
+
+    if (pendingMedia && currentMedia) {
+      // After reject, pending media should be removed if it is not used by current active media.
+      await this.deleteManagedMediaDiff(pendingMedia, currentMedia);
+    }
 
     const sports = await this.getSportsByCampaignId(campaignId);
     return this.mapCampaignToResponse(updated.rows[0], sports);
@@ -874,28 +1060,30 @@ export class CampaignAPI {
   }
 
   private mapCampaignToResponse(campaign: Campaign, sports: string[]): CampaignResponse {
+    const effectiveCampaign = this.applyPendingOverlay(campaign);
+    const normalizedMedia = this.normalizeMediaShape(effectiveCampaign.media);
     return {
-      id: campaign.id,
-      userId: campaign.user_id,
-      name: campaign.name,
-      description: campaign.description,
-      shortDescription: campaign.short_description,
-      location: campaign.location,
-      contacts: campaign.contacts,
-      workingTimetable: campaign.working_timetable,
-      socialsLinks: normalizeJsonArray(campaign.socials_links),
-      paymentMethods: normalizeEnumArray(campaign.payment_methods),
-      facilities: normalizeEnumArray(campaign.facilities),
+      id: effectiveCampaign.id,
+      userId: effectiveCampaign.user_id,
+      name: effectiveCampaign.name,
+      description: effectiveCampaign.description,
+      shortDescription: effectiveCampaign.short_description,
+      location: effectiveCampaign.location,
+      contacts: effectiveCampaign.contacts,
+      workingTimetable: effectiveCampaign.working_timetable,
+      socialsLinks: normalizeJsonArray(effectiveCampaign.socials_links),
+      paymentMethods: normalizeEnumArray(effectiveCampaign.payment_methods),
+      facilities: normalizeEnumArray(effectiveCampaign.facilities),
       sports: sports as any[], // Computed from fields
-      media: campaign.media,
-      bookingInfo: campaign.booking_info,
-      timezoneId: campaign.timezone_id,
-      status: campaign.status,
-      pendingChanges: campaign.pending_changes ?? null,
-      moderationComment: campaign.moderation_comment ?? null,
-      moderationAt: campaign.moderation_at ?? null,
-      createdAt: campaign.created_at,
-      updatedAt: campaign.updated_at
+      media: normalizedMedia,
+      bookingInfo: effectiveCampaign.booking_info,
+      timezoneId: effectiveCampaign.timezone_id,
+      status: effectiveCampaign.status,
+      pendingChanges: effectiveCampaign.pending_changes ?? null,
+      moderationComment: effectiveCampaign.moderation_comment ?? null,
+      moderationAt: effectiveCampaign.moderation_at ?? null,
+      createdAt: effectiveCampaign.created_at,
+      updatedAt: effectiveCampaign.updated_at
     };
   }
 

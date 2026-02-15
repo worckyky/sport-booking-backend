@@ -34,7 +34,16 @@ INSERT INTO campaign_info (
   '[{"type": "VK", "url": "https://vk.com/arena_sport"}, {"type": "TELEGRAM", "url": "https://t.me/arena_sport"}]'::jsonb,
   ARRAY['MONEY', 'CARD', 'SBP']::payment_method_type[],
   ARRAY['PARKING', 'SHOWER', 'LOCKER_ROOM', 'WIFI', 'LIGHTING', 'CAFE', 'RENTAL', 'VIDEO_SURVEILLANCE']::facility_type[],
-  '{"photos": ["https://images.unsplash.com/photo-1556817411-31ae72fa3ea0", "https://images.unsplash.com/photo-1575361204480-aadea25e6e68"]}'::jsonb,
+  '{
+    "main_src": "https://images.unsplash.com/photo-1556817411-31ae72fa3ea0",
+    "description": "Главное фото площадки",
+    "extra_media": [
+      {
+        "src": "https://images.unsplash.com/photo-1575361204480-aadea25e6e68",
+        "description": "Дополнительное фото"
+      }
+    ]
+  }'::jsonb,
   'Вход со стороны главного входа. При первом посещении обратитесь к администратору. Не забудьте спортивную форму!',
   'published'
 );
@@ -67,7 +76,11 @@ INSERT INTO campaign_info (
   '[{"type": "WHATS_APP", "url": "https://wa.me/74959876543"}]'::jsonb,
   ARRAY['MONEY', 'CARD']::payment_method_type[],
   ARRAY['PARKING', 'SHOWER', 'LOCKER_ROOM', 'CAFE', 'RENTAL']::facility_type[],
-  '{"photos": ["https://images.unsplash.com/photo-1622279457486-62dcc4a431d6"]}'::jsonb,
+  '{
+    "main_src": "https://images.unsplash.com/photo-1622279457486-62dcc4a431d6",
+    "description": "Главное фото площадки",
+    "extra_media": []
+  }'::jsonb,
   'Ракетки можно взять в аренду на ресепшене. Мячи предоставляются.',
   'published'
 );

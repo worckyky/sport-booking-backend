@@ -14,7 +14,9 @@ import createBookingRoutes from './booking/routes/booking.routes';
 import { createAuditRoutes } from './audit/audit.routes';
 import { getJwtSecret } from './config/auth';
 import { getDbPool } from './config/db';
+import { getS3Config } from './config/s3';
 import { runMigrations } from './scripts/migrations';
+import createS3Routes from './s3/routes/s3.routes';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -60,6 +62,7 @@ interface HealthResponse {
 async function start(): Promise<void> {
   // Database + Auth config (fail fast)
   getJwtSecret();
+  getS3Config();
   const db = getDbPool();
 
   // Apply DB migrations on startup
@@ -71,6 +74,7 @@ async function start(): Promise<void> {
   const registrationLinkRoutes = createRegistrationLinkRoutes(db);
   const campaignRoutes = createCampaignRoutes(db);
   const bookingRoutes = createBookingRoutes(db);
+  const s3Routes = createS3Routes(db);
 
   // Swagger UI
   app.use('/api-docs', swaggerUi.serve);
@@ -103,6 +107,7 @@ async function start(): Promise<void> {
   app.use('/auth', authLimiter, registrationLinkRoutes);
   app.use('/campaign', campaignRoutes);
   app.use('/booking', bookingLimiter, bookingRoutes);
+  app.use('/s3', s3Routes);
   app.use('/audit', createAuditRoutes(db));
 
   // Health check endpoint

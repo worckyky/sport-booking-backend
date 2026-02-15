@@ -107,6 +107,40 @@ router.get(
   }
 );
 
+// GET /campaign/:id/private - Получить данные кампании с pending overlay (только владелец)
+router.get(
+  '/:id/private',
+  authMiddleware(db),
+  campaignRoleMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      if (!req.userId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const campaignId = req.params.id;
+      if (!campaignId) {
+        res.status(400).json({ error: 'Campaign ID is required' });
+        return;
+      }
+
+      const campaign = await campaignAPI.getCampaignByIdForOwner(campaignId, req.userId);
+      res.json(campaign);
+    } catch (error) {
+      if (error instanceof Error) {
+        if (error.message === 'Campaign not found') {
+          res.status(404).json({ error: error.message });
+        } else {
+          res.status(400).json({ error: error.message });
+        }
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
 // POST /campaign - Создать новую кампанию
 router.post(
   '/',
