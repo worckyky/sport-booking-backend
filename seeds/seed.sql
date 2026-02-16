@@ -32,8 +32,8 @@ INSERT INTO campaign_info (
   '{"phone": "+7 (495) 123-45-67", "email": "info@arena-sport.ru"}'::jsonb,
   '{"monday": {"from": "08:00", "to": "23:00"}, "tuesday": {"from": "08:00", "to": "23:00"}, "wednesday": {"from": "08:00", "to": "23:00"}, "thursday": {"from": "08:00", "to": "23:00"}, "friday": {"from": "08:00", "to": "23:00"}, "saturday": {"from": "09:00", "to": "22:00"}, "sunday": {"from": "09:00", "to": "22:00"}}'::jsonb,
   '[{"type": "VK", "url": "https://vk.com/arena_sport"}, {"type": "TELEGRAM", "url": "https://t.me/arena_sport"}]'::jsonb,
-  ARRAY['MONEY', 'CARD', 'SBP']::payment_method_type[],
-  ARRAY['PARKING', 'SHOWER', 'LOCKER_ROOM', 'WIFI', 'LIGHTING', 'CAFE', 'RENTAL', 'VIDEO_SURVEILLANCE']::facility_type[],
+  ARRAY['MONEY', 'CARD', 'SBP'],
+  ARRAY['PARKING', 'SHOWER', 'LOCKER_ROOM', 'WIFI', 'LIGHTING', 'CAFE', 'RENTAL', 'VIDEO_SURVEILLANCE'],
   '{
     "main_src": "https://images.unsplash.com/photo-1556817411-31ae72fa3ea0",
     "description": "Главное фото площадки",
@@ -74,8 +74,8 @@ INSERT INTO campaign_info (
   '{"phone": "+7 (495) 987-65-43", "email": "info@pobeda-tennis.ru"}'::jsonb,
   '{"monday": {"from": "07:00", "to": "23:00"}, "tuesday": {"from": "07:00", "to": "23:00"}, "wednesday": {"from": "07:00", "to": "23:00"}, "thursday": {"from": "07:00", "to": "23:00"}, "friday": {"from": "07:00", "to": "23:00"}, "saturday": {"from": "08:00", "to": "23:00"}, "sunday": {"from": "08:00", "to": "23:00"}}'::jsonb,
   '[{"type": "WHATS_APP", "url": "https://wa.me/74959876543"}]'::jsonb,
-  ARRAY['MONEY', 'CARD']::payment_method_type[],
-  ARRAY['PARKING', 'SHOWER', 'LOCKER_ROOM', 'CAFE', 'RENTAL']::facility_type[],
+  ARRAY['MONEY', 'CARD'],
+  ARRAY['PARKING', 'SHOWER', 'LOCKER_ROOM', 'CAFE', 'RENTAL'],
   '{
     "main_src": "https://images.unsplash.com/photo-1622279457486-62dcc4a431d6",
     "description": "Главное фото площадки",
@@ -186,6 +186,7 @@ INSERT INTO fields (
   name,
   price_per_hour,
   sport_types,
+  is_indoor,
   working_timetable
 ) VALUES
 -- Arena fields
@@ -195,6 +196,7 @@ INSERT INTO fields (
   'Футбольное поле #1',
   2000.00,
   ARRAY['FOOTBALL']::text[],
+  false,
   NULL -- inherits from campaign
 ),
 (
@@ -203,6 +205,7 @@ INSERT INTO fields (
   'Футбольное поле #2',
   2000.00,
   ARRAY['FOOTBALL']::text[],
+  false,
   NULL
 ),
 (
@@ -211,6 +214,7 @@ INSERT INTO fields (
   'Баскетбольный корт',
   1500.00,
   ARRAY['BASKETBALL']::text[],
+  true,
   '{"monday": {"from": "10:00", "to": "22:00", "breaks": [{"from": "13:00", "to": "14:00", "reason": "Технический перерыв"}]}}'::jsonb
 ),
 (
@@ -219,6 +223,7 @@ INSERT INTO fields (
   'Теннисный корт #1',
   1000.00,
   ARRAY['TENNIS']::text[],
+  false,
   NULL
 ),
 -- Pobeda fields
@@ -228,6 +233,7 @@ INSERT INTO fields (
   'Корт #1 (крытый)',
   1500.00,
   ARRAY['TENNIS']::text[],
+  true,
   NULL
 ),
 (
@@ -236,6 +242,7 @@ INSERT INTO fields (
   'Корт #2 (открытый)',
   1200.00,
   ARRAY['TENNIS']::text[],
+  false,
   NULL
 );
 
@@ -356,13 +363,4 @@ INSERT INTO registration_links (
   NOW() + INTERVAL '7 days'
 );
 
--- =====================================================
--- PLATFORM SETTINGS (defaults)
--- =====================================================
-INSERT INTO platform_settings (key, value) VALUES
-  ('booking_limit_per_user', '10'),
-  ('booking_rate_limit_per_min', '5'),
-  ('registration_link_ttl_days', '7'),
-  ('invitation_ttl_days', '7'),
-  ('default_timezone', '"Europe/Moscow"')
-ON CONFLICT (key) DO NOTHING;
+-- PLATFORM SETTINGS — уже вставлены в миграции 023, не дублируем
