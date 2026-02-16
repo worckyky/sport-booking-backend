@@ -405,7 +405,10 @@ export class CampaignAPI {
 
   private static readonly CRITICAL_FIELDS = ['name', 'location', 'media'] as const;
 
-  private extractCriticalChanges(data: UpdateCampaignRequest): {
+  private extractCriticalChanges(
+    data: UpdateCampaignRequest,
+    currentCampaign: Campaign
+  ): {
     critical: Record<string, unknown>;
     nonCritical: UpdateCampaignRequest;
   } {
@@ -413,10 +416,19 @@ export class CampaignAPI {
     const nonCritical = { ...data };
 
     for (const field of CampaignAPI.CRITICAL_FIELDS) {
-      if ((data as any)[field] !== undefined) {
-        critical[field] = (data as any)[field];
+      const newVal = (data as any)[field];
+      if (newVal === undefined) continue;
+
+      // Compare with current DB value — skip if unchanged
+      const curVal = (currentCampaign as any)[field];
+      if (JSON.stringify(newVal) === JSON.stringify(curVal)) {
+        // Value unchanged — remove from nonCritical (don't re-write same value)
         delete (nonCritical as any)[field];
+        continue;
       }
+
+      critical[field] = newVal;
+      delete (nonCritical as any)[field];
     }
 
     return { critical, nonCritical };
@@ -429,13 +441,14 @@ export class CampaignAPI {
     userId: string,
     campaignData: UpdateCampaignRequest
   ): Promise<CampaignResponse> {
-    // Get current campaign status
+    // Get current campaign data (need name, location, media for critical field comparison)
     const currentResult = await this.db.query<Campaign>(
-      'SELECT status, pending_changes, media FROM campaign_info WHERE id = $1 AND user_id = $2',
+      'SELECT status, pending_changes, name, location, media FROM campaign_info WHERE id = $1 AND user_id = $2',
       [campaignId, userId]
     );
     if (currentResult.rowCount === 0) throw new Error('Campaign not found or not updated');
-    const currentStatus = currentResult.rows[0].status;
+    const currentCampaign = currentResult.rows[0];
+    const currentStatus = currentCampaign.status;
 
     // Validate required fields can't be cleared for published campaigns
     this.validateRequiredFields(campaignData, currentStatus);
@@ -446,13 +459,13 @@ export class CampaignAPI {
 
     let replacedPendingMediaBefore: Campaign['media'] | null = null;
     let replacedPendingMediaAfter: Campaign['media'] | null = null;
-    const currentActiveMedia = this.normalizeMediaShape(currentResult.rows[0].media);
+    const currentActiveMedia = this.normalizeMediaShape(currentCampaign.media);
 
     if (currentStatus === CampaignStatus.PUBLISHED) {
-      const { critical, nonCritical } = this.extractCriticalChanges(campaignData);
+      const { critical, nonCritical } = this.extractCriticalChanges(campaignData, currentCampaign);
       if (Object.keys(critical).length > 0) {
         // Merge with existing pending_changes
-        const existingPending = currentResult.rows[0].pending_changes ?? {};
+        const existingPending = currentCampaign.pending_changes ?? {};
         pendingChanges = { ...existingPending, ...critical };
 
         const existingPendingObj = existingPending as Record<string, unknown>;
@@ -1081,30 +1094,29 @@ export class CampaignAPI {
   }
 
   private mapCampaignToResponse(campaign: Campaign, sports: string[]): CampaignResponse {
-    const effectiveCampaign = this.applyPendingOverlay(campaign);
-    const normalizedMedia = this.normalizeMediaShape(effectiveCampaign.media);
+    const normalizedMedia = this.normalizeMediaShape(campaign.media);
     return {
-      id: effectiveCampaign.id,
-      userId: effectiveCampaign.user_id,
-      name: effectiveCampaign.name,
-      description: effectiveCampaign.description,
-      shortDescription: effectiveCampaign.short_description,
-      location: effectiveCampaign.location,
-      contacts: effectiveCampaign.contacts,
-      workingTimetable: effectiveCampaign.working_timetable,
-      socialsLinks: normalizeJsonArray(effectiveCampaign.socials_links),
-      paymentMethods: normalizeEnumArray(effectiveCampaign.payment_methods),
-      facilities: normalizeEnumArray(effectiveCampaign.facilities),
+      id: campaign.id,
+      userId: campaign.user_id,
+      name: campaign.name,
+      description: campaign.description,
+      shortDescription: campaign.short_description,
+      location: campaign.location,
+      contacts: campaign.contacts,
+      workingTimetable: campaign.working_timetable,
+      socialsLinks: normalizeJsonArray(campaign.socials_links),
+      paymentMethods: normalizeEnumArray(campaign.payment_methods),
+      facilities: normalizeEnumArray(campaign.facilities),
       sports: sports as any[], // Computed from fields
       media: normalizedMedia,
-      bookingInfo: effectiveCampaign.booking_info,
-      timezoneId: effectiveCampaign.timezone_id,
-      status: effectiveCampaign.status,
-      pendingChanges: effectiveCampaign.pending_changes ?? null,
-      moderationComment: effectiveCampaign.moderation_comment ?? null,
-      moderationAt: effectiveCampaign.moderation_at ?? null,
-      createdAt: effectiveCampaign.created_at,
-      updatedAt: effectiveCampaign.updated_at
+      bookingInfo: campaign.booking_info,
+      timezoneId: campaign.timezone_id,
+      status: campaign.status,
+      pendingChanges: campaign.pending_changes ?? null,
+      moderationComment: campaign.moderation_comment ?? null,
+      moderationAt: campaign.moderation_at ?? null,
+      createdAt: campaign.created_at,
+      updatedAt: campaign.updated_at
     };
   }
 

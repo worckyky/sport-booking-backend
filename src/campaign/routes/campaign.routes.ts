@@ -500,6 +500,29 @@ router.get(
   }
 );
 
+// GET /campaign/:id/admin-detail - Получить площадку по ID (только ADMIN, любой статус, без overlay)
+router.get(
+  '/:id/admin-detail',
+  adminMiddleware(db),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const campaignId = req.params.id;
+      const campaign = await campaignAPI.getCampaignById(campaignId);
+      res.json(campaign);
+    } catch (error) {
+      if (error instanceof Error) {
+        if (error.message === 'Campaign not found') {
+          res.status(404).json({ error: error.message });
+        } else {
+          res.status(400).json({ error: error.message });
+        }
+      } else {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+);
+
 // GET /campaign/:id/fields-list - Список полей для суперадмина (ADMIN)
 router.get(
   '/:id/fields-list',
