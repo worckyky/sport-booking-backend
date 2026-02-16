@@ -19,18 +19,20 @@ router.get(
   '/',
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const { sport, q, sort, date } = req.query as {
+      const { sport, q, sort, date, is_indoor } = req.query as {
         sport?: string;
         q?: string;
         sort?: string;
         date?: string;
+        is_indoor?: string;
       };
 
       const campaigns = await campaignAPI.getPublishedCampaigns({
         sport,
         q,
         sort,
-        date
+        date,
+        is_indoor: is_indoor === 'true' ? true : is_indoor === 'false' ? false : undefined,
       });
       res.json(campaigns);
     } catch (error) {

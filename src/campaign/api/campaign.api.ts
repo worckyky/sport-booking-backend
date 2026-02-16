@@ -950,6 +950,7 @@ export class CampaignAPI {
     q?: string;
     sort?: string;
     date?: string;
+    is_indoor?: boolean;
   }): Promise<CampaignResponse[]> {
     const values: unknown[] = [];
     let paramIndex = 1;
@@ -979,6 +980,13 @@ export class CampaignAPI {
         paramIndex++;
       }
 
+      let fieldIndoorCondition = '';
+      if (filters?.is_indoor !== undefined) {
+        fieldIndoorCondition = `AND f.is_indoor = $${paramIndex}`;
+        values.push(filters.is_indoor);
+        paramIndex++;
+      }
+
       // Sort order
       let orderBy = 'c.created_at DESC';
       if (filters?.sort === 'name_asc') {
@@ -1000,6 +1008,7 @@ export class CampaignAPI {
             AND s.is_blocked = false
             AND b.id IS NULL
             ${fieldSportCondition}
+            ${fieldIndoorCondition}
         )
         ORDER BY ${orderBy}
       `;
@@ -1031,24 +1040,36 @@ export class CampaignAPI {
 
     // Filter by sport through fields.sport_types (text[]) instead of campaign.sports (enum[])
     // This allows filtering by all sports including those not in the sport_type enum
-    let sportSubquery = '';
+    let fieldSubquery = '';
+    const fieldConditions: string[] = [];
+
     if (filters?.sport) {
-      sportSubquery = `
+      fieldConditions.push(`$${paramIndex} = ANY(f.sport_types)`);
+      values.push(filters.sport.toUpperCase());
+      paramIndex++;
+    }
+
+    if (filters?.is_indoor !== undefined) {
+      fieldConditions.push(`f.is_indoor = $${paramIndex}`);
+      values.push(filters.is_indoor);
+      paramIndex++;
+    }
+
+    if (fieldConditions.length > 0) {
+      fieldSubquery = `
         AND EXISTS (
           SELECT 1 FROM fields f
           WHERE f.campaign_id = id
             AND f.status = 'active'
-            AND $${paramIndex} = ANY(f.sport_types)
+            AND ${fieldConditions.join(' AND ')}
         )
       `;
-      values.push(filters.sport.toUpperCase());
-      paramIndex++;
     }
 
     const query = `
       SELECT * FROM campaign_info
       WHERE ${conditions.join(' AND ')}
-      ${sportSubquery}
+      ${fieldSubquery}
       ORDER BY ${orderBy}
     `;
 
