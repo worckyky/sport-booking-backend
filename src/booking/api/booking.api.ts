@@ -20,6 +20,7 @@ import {
 import { toJsonbValue } from '../../utils/pg';
 import { normalizePhone } from '../../utils/phone';
 import { findOrCreateGuestUserInTransaction } from '../../utils/guest-user';
+import { S3API } from '../../s3/api/s3.api';
 
 // Типы для классификации изменений
 type FieldChangeType = 'COSMETIC' | 'BREAK_CHANGE' | 'SCHEDULE_CHANGE';
@@ -75,6 +76,8 @@ interface WorkingTimetable {
 }
 
 export class BookingAPI {
+  private readonly s3API = new S3API();
+
   constructor(private db: Pool) {}
 
   // ==================== TRANSACTION HELPER ====================
@@ -426,19 +429,21 @@ export class BookingAPI {
       this.validateFieldWorkingHours(data.working_hours_from, data.working_hours_to, campaignTimetable);
     }
 
+    // Фото идут в pending_photos (премодерация), photos остаётся пустым
     const result = await this.db.query<Field>(
       `INSERT INTO fields (
-        campaign_id, name, sport_types, is_indoor, photos, price_per_hour,
+        campaign_id, name, sport_types, is_indoor, photos, pending_photos, price_per_hour,
         slot_duration, working_hours_from, working_hours_to, working_days, working_timetable, client_info
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING *`,
       [
         data.campaign_id,
         data.name,
         data.sport_types,
         data.is_indoor,
-        data.photos,
+        '{}',                                // photos = пусто до модерации
+        data.photos,                         // pending_photos = загруженные фото
         data.price_per_hour,
         data.slot_duration ?? 60,
         data.working_hours_from ?? null,
@@ -770,7 +775,7 @@ export class BookingAPI {
     if (data.name !== undefined) { sets.push(`name = $${idx++}`); values.push(data.name); }
     if (data.sport_types !== undefined) { sets.push(`sport_types = $${idx++}`); values.push(data.sport_types); }
     if (data.is_indoor !== undefined) { sets.push(`is_indoor = $${idx++}`); values.push(data.is_indoor); }
-    if (data.photos !== undefined) { sets.push(`photos = $${idx++}`); values.push(data.photos); }
+    if (data.photos !== undefined) { sets.push(`pending_photos = $${idx++}`); values.push(data.photos); }
     if (data.price_per_hour !== undefined) { sets.push(`price_per_hour = $${idx++}`); values.push(data.price_per_hour); }
     if (data.status !== undefined) { sets.push(`status = $${idx++}`); values.push(data.status); }
     if (data.slot_duration !== undefined) { sets.push(`slot_duration = $${idx++}`); values.push(data.slot_duration); }
@@ -931,6 +936,102 @@ export class BookingAPI {
       [fieldId]
     );
     return (result.rowCount ?? 0) > 0;
+  }
+
+  // ==================== FIELD PHOTOS MODERATION ====================
+
+  /**
+   * Парсит bucket и key из S3 URL (proxy или direct)
+   */
+  private extractBucketKeyFromUrl(url: string): { bucket: string; key: string } | null {
+    try {
+      const parsed = new URL(url);
+      const path = decodeURIComponent(parsed.pathname || '');
+      const proxyMarker = '/s3/public/';
+      const proxyIndex = path.indexOf(proxyMarker);
+      if (proxyIndex >= 0) {
+        const rest = path.slice(proxyIndex + proxyMarker.length);
+        const slashIndex = rest.indexOf('/');
+        if (slashIndex > 0 && slashIndex < rest.length - 1) {
+          return { bucket: rest.slice(0, slashIndex), key: rest.slice(slashIndex + 1) };
+        }
+      }
+      const directParts = path.split('/').filter(Boolean);
+      if (directParts.length >= 2) {
+        return { bucket: directParts[0], key: directParts.slice(1).join('/') };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Удаляет S3 objects из beforePhotos, которых нет в afterPhotos
+   */
+  private async deletePhotoDiff(beforePhotos: string[], afterPhotos: string[]): Promise<void> {
+    const afterSet = new Set(afterPhotos);
+    const toDelete = beforePhotos
+      .filter((url) => !afterSet.has(url))
+      .map((url) => this.extractBucketKeyFromUrl(url))
+      .filter((item): item is { bucket: string; key: string } => item !== null && item.key.startsWith('images/'));
+
+    // Группируем по bucket
+    const byBucket = new Map<string, string[]>();
+    for (const { bucket, key } of toDelete) {
+      if (!byBucket.has(bucket)) byBucket.set(bucket, []);
+      byBucket.get(bucket)!.push(key);
+    }
+
+    for (const [bucket, keys] of byBucket) {
+      try {
+        await this.s3API.deleteObjects({ bucket, keys });
+      } catch (error) {
+        console.error(`Failed to cleanup field photos in bucket ${bucket}:`, error);
+      }
+    }
+  }
+
+  async approveFieldPhotos(fieldId: string): Promise<Field> {
+    const field = await this.getFieldById(fieldId);
+    if (!field) throw new Error('Field not found');
+    if (!field.pending_photos || field.pending_photos.length === 0) {
+      throw new Error('No pending photos to approve');
+    }
+
+    const oldPhotos = field.photos || [];
+    const newPhotos = field.pending_photos;
+
+    const result = await this.db.query<Field>(
+      'UPDATE fields SET photos = pending_photos, pending_photos = NULL WHERE id = $1 RETURNING *',
+      [fieldId]
+    );
+
+    // Cleanup: удалить старые фото, которых нет в новых
+    await this.deletePhotoDiff(oldPhotos, newPhotos);
+
+    return result.rows[0];
+  }
+
+  async rejectFieldPhotos(fieldId: string): Promise<Field> {
+    const field = await this.getFieldById(fieldId);
+    if (!field) throw new Error('Field not found');
+    if (!field.pending_photos || field.pending_photos.length === 0) {
+      throw new Error('No pending photos to reject');
+    }
+
+    const pendingPhotos = field.pending_photos;
+    const currentPhotos = field.photos || [];
+
+    const result = await this.db.query<Field>(
+      'UPDATE fields SET pending_photos = NULL WHERE id = $1 RETURNING *',
+      [fieldId]
+    );
+
+    // Cleanup: удалить pending фото, которых нет в текущих
+    await this.deletePhotoDiff(pendingPhotos, currentPhotos);
+
+    return result.rows[0];
   }
 
   // ==================== SLOTS ====================
@@ -1469,6 +1570,7 @@ export class BookingAPI {
         working_days: row.working_days || [],
         working_timetable: row.working_timetable || null,
         client_info: row.client_info,
+        pending_photos: row.pending_photos || null,
         created_at: row.field_created_at || row.created_at,
         deleted_at: row.field_deleted_at || null
       }
@@ -2190,6 +2292,7 @@ export class BookingAPI {
         working_days: row.working_days || [],
         working_timetable: row.working_timetable || null,
         client_info: row.client_info,
+        pending_photos: row.pending_photos || null,
         created_at: row.field_created_at || row.created_at,
         deleted_at: row.field_deleted_at || null
       },

@@ -36,6 +36,7 @@ export interface Field {
   working_days: string[];                 // DEPRECATED - use working_timetable
   working_timetable: FieldWorkingTimetable | null;  // NEW
   client_info: string | null;
+  pending_photos: string[] | null;        // Фото на модерации (до одобрения суперадмином)
   created_at: string;
   deleted_at: string | null;              // Soft delete timestamp
 }

@@ -805,6 +805,8 @@ export class CampaignAPI {
     sport_types: string[];
     status: string;
     price_per_hour: number | null;
+    photos: string[];
+    pending_photos: string[] | null;
   }[]> {
     const result = await this.db.query<{
       id: string;
@@ -812,8 +814,10 @@ export class CampaignAPI {
       sport_types: string[];
       status: string;
       price_per_hour: number | null;
+      photos: string[];
+      pending_photos: string[] | null;
     }>(
-      `SELECT id, name, sport_types, status, price_per_hour
+      `SELECT id, name, sport_types, status, price_per_hour, photos, pending_photos
        FROM fields
        WHERE campaign_id = $1 AND deleted_at IS NULL
        ORDER BY created_at ASC`,

@@ -252,6 +252,50 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   );
 
+  // ==================== FIELD PHOTOS MODERATION (ADMIN) ====================
+
+  // PUT /booking/fields/:id/approve-photos — одобрить фото поля (суперадмин)
+  router.put(
+    '/fields/:id/approve-photos',
+    adminMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const field = await api.approveFieldPhotos(req.params.id);
+        res.json(field);
+      } catch (error) {
+        const msg = (error as Error).message;
+        if (msg.includes('not found')) {
+          res.status(404).json({ error: msg });
+        } else if (msg.includes('No pending')) {
+          res.status(400).json({ error: msg });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    }
+  );
+
+  // PUT /booking/fields/:id/reject-photos — отклонить фото поля (суперадмин)
+  router.put(
+    '/fields/:id/reject-photos',
+    adminMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const field = await api.rejectFieldPhotos(req.params.id);
+        res.json(field);
+      } catch (error) {
+        const msg = (error as Error).message;
+        if (msg.includes('not found')) {
+          res.status(404).json({ error: msg });
+        } else if (msg.includes('No pending')) {
+          res.status(400).json({ error: msg });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    }
+  );
+
   // ==================== SLOTS ====================
 
   // GET /booking/slots?field_id=&date= — слоты поля на дату (публичный)
