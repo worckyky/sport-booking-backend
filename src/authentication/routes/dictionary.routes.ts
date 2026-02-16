@@ -71,6 +71,22 @@ export function createDictionaryRoutes(db: Pool): Router {
       }
     });
 
+    // PUT reorder — MUST be before /:id to avoid matching "reorder" as id
+    router.put(`/admin/dictionaries/${path}/reorder`, adminMiddleware(db), async (req: AuthRequest, res: Response) => {
+      try {
+        const { items } = req.body as ReorderRequest;
+        if (!Array.isArray(items) || items.length === 0) {
+          res.status(400).json({ error: 'items array is required' });
+          return;
+        }
+        await api.reorder(table, items);
+        const updated = await api.getAll(table, false);
+        res.json(updated);
+      } catch {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
     // PUT update
     router.put(`/admin/dictionaries/${path}/:id`, adminMiddleware(db), async (req: AuthRequest, res: Response) => {
       try {
@@ -90,7 +106,7 @@ export function createDictionaryRoutes(db: Pool): Router {
       }
     });
 
-    // DELETE (soft-delete)
+    // DELETE (soft-delete with usage protection)
     router.delete(`/admin/dictionaries/${path}/:id`, adminMiddleware(db), async (req: AuthRequest, res: Response) => {
       try {
         const result = await api.delete(table, req.params.id);
@@ -100,22 +116,6 @@ export function createDictionaryRoutes(db: Pool): Router {
           return;
         }
         res.json({ success: true });
-      } catch {
-        res.status(500).json({ error: 'Internal server error' });
-      }
-    });
-
-    // PUT reorder
-    router.put(`/admin/dictionaries/${path}/reorder`, adminMiddleware(db), async (req: AuthRequest, res: Response) => {
-      try {
-        const { items } = req.body as ReorderRequest;
-        if (!Array.isArray(items) || items.length === 0) {
-          res.status(400).json({ error: 'items array is required' });
-          return;
-        }
-        await api.reorder(table, items);
-        const updated = await api.getAll(table, false);
-        res.json(updated);
       } catch {
         res.status(500).json({ error: 'Internal server error' });
       }
