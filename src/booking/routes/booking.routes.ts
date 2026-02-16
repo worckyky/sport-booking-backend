@@ -121,7 +121,7 @@ export default function createBookingRoutes(db: Pool): Router {
           res.status(400).json({ error: 'campaign_id and name are required' });
           return;
         }
-        const sportErr = validateSportTypes(sport_types);
+        const sportErr = await validateSportTypes(db, sport_types);
         if (sportErr) {
           res.status(400).json({ error: sportErr });
           return;
@@ -175,7 +175,7 @@ export default function createBookingRoutes(db: Pool): Router {
 
         // Валидация sport_types если передан
         if (sport_types !== undefined) {
-          const sportErr = validateSportTypes(sport_types);
+          const sportErr = await validateSportTypes(db, sport_types);
           if (sportErr) {
             res.status(400).json({ error: sportErr });
             return;

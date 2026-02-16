@@ -1,4 +1,5 @@
-import { PaymentMethod, Facility, Sport } from '../campaign/model/campaign.model';
+import type { Pool } from 'pg';
+import { PaymentMethod } from '../campaign/model/campaign.model';
 
 // ==================== Password Validator ====================
 
@@ -13,8 +14,6 @@ export function validatePassword(password: string): string | null {
 // ==================== Enum Validators ====================
 
 const PAYMENT_METHODS = new Set(Object.values(PaymentMethod));
-const FACILITIES = new Set(Object.values(Facility));
-const SPORT_TYPES = new Set(Object.values(Sport));
 
 export function validatePaymentMethods(methods: unknown): string | null {
   if (!Array.isArray(methods)) return 'payment_methods must be an array';
@@ -26,21 +25,27 @@ export function validatePaymentMethods(methods: unknown): string | null {
   return null;
 }
 
-export function validateFacilities(facilities: unknown): string | null {
+// ==================== Dynamic Dictionary Validators ====================
+
+export async function validateFacilities(db: Pool, facilities: unknown): Promise<string | null> {
   if (!Array.isArray(facilities)) return 'facilities must be an array';
+  const result = await db.query<{ code: string }>('SELECT code FROM facilities WHERE is_active = true');
+  const valid = new Set(result.rows.map(r => r.code));
   for (const f of facilities) {
-    if (!FACILITIES.has(f as Facility)) {
-      return `Invalid facility: "${f}". Allowed: ${[...FACILITIES].join(', ')}`;
+    if (!valid.has(f as string)) {
+      return `Invalid facility: "${f}"`;
     }
   }
   return null;
 }
 
-export function validateSportTypes(types: unknown): string | null {
+export async function validateSportTypes(db: Pool, types: unknown): Promise<string | null> {
   if (!Array.isArray(types) || types.length === 0) return 'sport_types array is required';
+  const result = await db.query<{ code: string }>('SELECT code FROM sport_types WHERE is_active = true');
+  const valid = new Set(result.rows.map(r => r.code));
   for (const t of types) {
-    if (!SPORT_TYPES.has(t as Sport)) {
-      return `Invalid sport type: "${t}". Allowed: ${[...SPORT_TYPES].join(', ')}`;
+    if (!valid.has(t as string)) {
+      return `Invalid sport type: "${t}"`;
     }
   }
   return null;

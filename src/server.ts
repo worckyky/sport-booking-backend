@@ -9,6 +9,7 @@ import { swaggerSpec } from './swagger.config';
 import { AuthRoutes } from './authentication/routes/auth.routes';
 import { createInvitationRoutes } from './authentication/routes/invitation.routes';
 import { createRegistrationLinkRoutes } from './authentication/routes/registration-link.routes';
+import { createDictionaryRoutes } from './authentication/routes/dictionary.routes';
 import createCampaignRoutes from './campaign/routes/campaign.routes';
 import createBookingRoutes from './booking/routes/booking.routes';
 import { createAuditRoutes } from './audit/audit.routes';
@@ -105,6 +106,7 @@ async function start(): Promise<void> {
   app.use('/auth', authLimiter, authRoutes.getRouter());
   app.use('/auth', authLimiter, invitationRoutes);
   app.use('/auth', authLimiter, registrationLinkRoutes);
+  app.use('/auth', authLimiter, createDictionaryRoutes(db));
   app.use('/campaign', campaignRoutes);
   app.use('/booking', bookingLimiter, bookingRoutes);
   app.use('/s3', s3Routes);

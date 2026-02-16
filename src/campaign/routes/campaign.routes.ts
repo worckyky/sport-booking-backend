@@ -169,7 +169,7 @@ router.post(
       }
       const facilities = campaignData.facilities;
       if (facilities) {
-        const err = validateFacilities(facilities);
+        const err = await validateFacilities(db, facilities);
         if (err) { res.status(400).json({ error: err }); return; }
       }
       const timetable = campaignData.workingTimetable ?? requestData.working_timetable;
@@ -230,7 +230,7 @@ router.put(
       }
       const facilities = campaignData.facilities;
       if (facilities !== undefined) {
-        const err = validateFacilities(facilities);
+        const err = await validateFacilities(db, facilities);
         if (err) { res.status(400).json({ error: err }); return; }
       }
       const timetable = campaignData.workingTimetable ?? requestData.working_timetable;

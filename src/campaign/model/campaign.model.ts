@@ -17,41 +17,8 @@ export enum PaymentMethod {
   SBP = 'SBP'
 }
 
-export enum Facility {
-  PARKING = 'PARKING',
-  SHOWER = 'SHOWER',
-  LOCKER_ROOM = 'LOCKER_ROOM',
-  STORAGE = 'STORAGE',
-  WIFI = 'WIFI',
-  LIGHTING = 'LIGHTING',
-  STANDS = 'STANDS',
-  MUSIC = 'MUSIC',
-  AIR_CONDITIONING = 'AIR_CONDITIONING',
-  HEATING = 'HEATING',
-  CAFE = 'CAFE',
-  RENTAL = 'RENTAL',
-  TRAINERS = 'TRAINERS',
-  RESTROOM = 'RESTROOM',
-  VIDEO_SURVEILLANCE = 'VIDEO_SURVEILLANCE'
-}
-
-export enum Sport {
-  FOOTBALL = 'FOOTBALL',
-  MINI_FOOTBALL = 'MINI_FOOTBALL',
-  BASKETBALL = 'BASKETBALL',
-  VOLLEYBALL = 'VOLLEYBALL',
-  TENNIS = 'TENNIS',
-  TABLE_TENNIS = 'TABLE_TENNIS',
-  BADMINTON = 'BADMINTON',
-  SQUASH = 'SQUASH',
-  PADEL = 'PADEL',
-  HOCKEY = 'HOCKEY',
-  FITNESS = 'FITNESS',
-  YOGA = 'YOGA',
-  SWIMMING = 'SWIMMING',
-  MARTIAL_ARTS = 'MARTIAL_ARTS',
-  OTHER = 'OTHER'
-}
+// Sport types and Facilities are now managed as dynamic dictionaries in DB
+// (tables: sport_types, facilities) — see migration 028
 
 export interface Location {
   city: string;
@@ -109,7 +76,7 @@ export interface Campaign {
   working_timetable: WorkingTimetable | null;
   socials_links: SocialLink[] | null;
   payment_methods: PaymentMethod[] | null;
-  facilities: Facility[] | null;
+  facilities: string[] | null;
   media: Media | null;
   booking_info: string | null;
   timezone_id: string;
@@ -132,8 +99,8 @@ export interface CampaignResponse {
   workingTimetable: WorkingTimetable | null;
   socialsLinks: SocialLink[] | null;
   paymentMethods: PaymentMethod[] | null;
-  facilities: Facility[] | null;
-  sports: Sport[] | null;
+  facilities: string[] | null;
+  sports: string[] | null;
   media: Media | null;
   bookingInfo: string | null;
   timezoneId: string;
@@ -174,7 +141,7 @@ export interface CreateCampaignRequest {
   workingTimetable: WorkingTimetable;
   socialsLinks?: SocialLink[];
   paymentMethods?: PaymentMethod[];
-  facilities?: Facility[];
+  facilities?: string[];
   media?: Media;
   bookingInfo?: string;
   timezoneId?: string;
@@ -189,7 +156,7 @@ export interface UpdateCampaignRequest {
   workingTimetable?: WorkingTimetable;
   socialsLinks?: SocialLink[];
   paymentMethods?: PaymentMethod[];
-  facilities?: Facility[];
+  facilities?: string[];
   media?: Media;
   bookingInfo?: string;
   timezoneId?: string;
