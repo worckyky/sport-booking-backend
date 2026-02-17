@@ -405,6 +405,14 @@ export class CampaignAPI {
 
   private static readonly CRITICAL_FIELDS = ['name', 'location', 'media'] as const;
 
+  /** Normalize empty strings / undefined to null for stable JSON comparison */
+  private static normalizeForCompare(val: unknown): string {
+    return JSON.stringify(val, (_key, value) => {
+      if (value === '' || value === undefined) return null;
+      return value;
+    });
+  }
+
   private extractCriticalChanges(
     data: UpdateCampaignRequest,
     currentCampaign: Campaign
@@ -420,8 +428,9 @@ export class CampaignAPI {
       if (newVal === undefined) continue;
 
       // Compare with current DB value — skip if unchanged
+      // Normalize null / "" / undefined to avoid false diffs (e.g. coordinates: null vs "")
       const curVal = (currentCampaign as any)[field];
-      if (JSON.stringify(newVal) === JSON.stringify(curVal)) {
+      if (CampaignAPI.normalizeForCompare(newVal) === CampaignAPI.normalizeForCompare(curVal)) {
         // Value unchanged — remove from nonCritical (don't re-write same value)
         delete (nonCritical as any)[field];
         continue;
@@ -1021,6 +1030,7 @@ export class CampaignAPI {
           LEFT JOIN bookings b ON b.slot_id = s.id AND b.status IN ('pending', 'confirmed')
           WHERE f.campaign_id = c.id
             AND f.status = 'active'
+            AND f.deleted_at IS NULL
             AND s.date = $${dateParamIndex}
             AND s.is_blocked = false
             AND b.id IS NULL
@@ -1076,8 +1086,9 @@ export class CampaignAPI {
       fieldSubquery = `
         AND EXISTS (
           SELECT 1 FROM fields f
-          WHERE f.campaign_id = id
+          WHERE f.campaign_id = campaign_info.id
             AND f.status = 'active'
+            AND f.deleted_at IS NULL
             AND ${fieldConditions.join(' AND ')}
         )
       `;

@@ -10,4 +10,4 @@ ON bookings(user_id, status);
 -- Partial index — только активные брони (excluded: cancelled*)
 CREATE INDEX IF NOT EXISTS idx_bookings_slot_active
 ON bookings(slot_id)
-WHERE status NOT IN ('cancelled_by_user', 'cancelled_by_facility', 'cancelled_by_admin');
+WHERE status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin');

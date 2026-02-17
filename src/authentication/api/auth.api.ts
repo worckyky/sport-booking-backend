@@ -14,6 +14,7 @@ import {
 } from '../model/auth.model';
 import { type DbUser, getEmailStatus } from '../model/user.model';
 import { createEmailConfirmToken, sendEmailConfirmation } from '../../utils/emailConfirmation';
+import { normalizePhone } from '../../utils/phone';
 import { sendPasswordResetEmail } from '../../utils/passwordResetEmail';
 
 export class AuthAPI {
@@ -86,7 +87,7 @@ export class AuthAPI {
           passwordHash,
           role,
           credentials.name ?? null,
-          credentials.phone ?? null,
+          normalizePhone(credentials.phone) ?? null,
           credentials.date_of_birth ?? null,
           EMAIL_STATUS.NOT_VERIFIED,
           now,

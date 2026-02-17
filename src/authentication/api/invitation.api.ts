@@ -12,6 +12,7 @@ import {
   INVITATION_TTL_DAYS
 } from '../model/invitation.model';
 import { sendInvitationEmail } from '../../utils/invitationEmail';
+import { normalizePhone } from '../../utils/phone';
 
 function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -218,7 +219,7 @@ export class InvitationAPI {
           passwordHash,
           inv.role,
           name ?? null,
-          phone ?? null,
+          normalizePhone(phone) ?? null,
           EMAIL_STATUS.VERIFIED, // Email верифицирован через invite flow
           inv.campaign_id, // NULL для ADMIN, campaign_id для менеджера
           inv.invited_by,

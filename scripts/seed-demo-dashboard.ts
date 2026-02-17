@@ -140,10 +140,103 @@ const CAMPAIGN_8_FIELDS: FieldConfig[] = [
   { name: 'Зал', sport: 'BASKETBALL', indoor: true, price: 1500, duration: 60, fromHour: 10, toHour: 21, sundayOff: false, info: 'Баскетбольный зал.' },
 ];
 
+// ===== UNSPLASH PHOTO BANK =====
+const SPORT_PHOTOS: Record<string, string[]> = {
+  FOOTBALL: [
+    'https://images.unsplash.com/photo-1529900748604-07564a03e7a6?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1518604666860-9ed391f76460?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1431324155629-1a6deb1dec8d?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1551958219-acbc608c6377?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1459865264687-595d652de67e?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1575361204480-aadea25e6e68?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1624880357913-a8539238245b?w=800&h=600&fit=crop',
+  ],
+  TENNIS: [
+    'https://images.unsplash.com/photo-1554068865-24cecd4e34b8?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1622279457486-62dcc4a431d6?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1595435934249-5df7ed86e1c0?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1530915534664-4ac6423816b7?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1587280501635-68a0e82cd5ff?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1542144582-1ba00456b5e3?w=800&h=600&fit=crop',
+  ],
+  BASKETBALL: [
+    'https://images.unsplash.com/photo-1546519638-68e109498ffc?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1559692048-79a3f837883d?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1504450758481-7338bbe75c8e?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1519861531473-9200262188bf?w=800&h=600&fit=crop',
+  ],
+  VOLLEYBALL: [
+    'https://images.unsplash.com/photo-1612872087720-bb876e2e67d1?w=800&h=600&fit=crop',
+    'https://images.unsplash.com/photo-1553005746-9245ba190489?w=800&h=600&fit=crop',
+  ],
+};
+
+const CAMPAIGN_PHOTOS: Record<string, { main: string; extra: string[] }> = {
+  'СпортПарк Казань': {
+    main: 'https://images.unsplash.com/photo-1556817411-31ae72fa3ea0?w=800&h=600&fit=crop',
+    extra: [
+      'https://images.unsplash.com/photo-1575361204480-aadea25e6e68?w=800&h=600&fit=crop',
+      'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=800&h=600&fit=crop',
+    ],
+  },
+  'Теннисный клуб "Победа" Казань': {
+    main: 'https://images.unsplash.com/photo-1622279457486-62dcc4a431d6?w=800&h=600&fit=crop',
+    extra: [
+      'https://images.unsplash.com/photo-1554068865-24cecd4e34b8?w=800&h=600&fit=crop',
+    ],
+  },
+  'ФутАрена Казань': {
+    main: 'https://images.unsplash.com/photo-1529900748604-07564a03e7a6?w=800&h=600&fit=crop',
+    extra: [
+      'https://images.unsplash.com/photo-1431324155629-1a6deb1dec8d?w=800&h=600&fit=crop',
+      'https://images.unsplash.com/photo-1551958219-acbc608c6377?w=800&h=600&fit=crop',
+    ],
+  },
+  'Баскет Центр': {
+    main: 'https://images.unsplash.com/photo-1546519638-68e109498ffc?w=800&h=600&fit=crop',
+    extra: [
+      'https://images.unsplash.com/photo-1559692048-79a3f837883d?w=800&h=600&fit=crop',
+    ],
+  },
+  'Теннис Плюс Казань': {
+    main: 'https://images.unsplash.com/photo-1595435934249-5df7ed86e1c0?w=800&h=600&fit=crop',
+    extra: [
+      'https://images.unsplash.com/photo-1530915534664-4ac6423816b7?w=800&h=600&fit=crop',
+    ],
+  },
+  'Мини-Футбол Казань': {
+    main: 'https://images.unsplash.com/photo-1459865264687-595d652de67e?w=800&h=600&fit=crop',
+    extra: [
+      'https://images.unsplash.com/photo-1624880357913-a8539238245b?w=800&h=600&fit=crop',
+    ],
+  },
+  'Баскет Холл Казань': {
+    main: 'https://images.unsplash.com/photo-1504450758481-7338bbe75c8e?w=800&h=600&fit=crop',
+    extra: [],
+  },
+};
+
+let sportPhotoCounter: Record<string, number> = {};
+function getFieldPhoto(sport: string): string {
+  const photos = SPORT_PHOTOS[sport] || SPORT_PHOTOS['FOOTBALL'];
+  if (!sportPhotoCounter[sport]) sportPhotoCounter[sport] = 0;
+  const photo = photos[sportPhotoCounter[sport] % photos.length];
+  sportPhotoCounter[sport]++;
+  return photo;
+}
+
 // ===== HELPERS =====
 function uuid(): string { return crypto.randomUUID(); }
 function randomElement<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]; }
 function randomPhone(): string { return `79${Math.floor(Math.random() * 900000000) + 100000000}`; }
+/** Format normalized phone (7XXXXXXXXXX) for display in campaign contacts */
+function formatDisplayPhone(phone: string): string {
+  if (phone.length === 11 && phone.startsWith('7')) {
+    return `+7 (${phone.slice(1, 4)}) ${phone.slice(4, 7)}-${phone.slice(7, 9)}-${phone.slice(9, 11)}`;
+  }
+  return phone;
+}
 function pad2(n: number): string { return n.toString().padStart(2, '0'); }
 function dateToString(date: Date): string { return date.toISOString().split('T')[0]; }
 
@@ -220,6 +313,44 @@ function makeFieldTimetable(field: FieldConfig): string {
   });
 }
 
+// ===== GUEST USER CACHE (phone → userId) =====
+const guestUserMap = new Map<string, string>();
+
+/** Creates guest user records in DB for clients with userId=null, updates userId in-place */
+async function ensureGuestUsers(clients: ClientFreq[]): Promise<void> {
+  for (const client of clients) {
+    if (client.userId !== null) continue;
+
+    // Check if already created for this phone
+    const existingId = guestUserMap.get(client.phone);
+    if (existingId) {
+      client.userId = existingId;
+      continue;
+    }
+
+    // Check if phone already exists in DB (from base seed registered users)
+    const existing = await pool.query<{ id: string }>(
+      'SELECT id FROM users WHERE phone = $1',
+      [client.phone],
+    );
+    if (existing.rows.length > 0) {
+      client.userId = existing.rows[0].id;
+      guestUserMap.set(client.phone, client.userId);
+      continue;
+    }
+
+    // Create guest user
+    const guestId = uuid();
+    await pool.query(
+      `INSERT INTO users (id, email, password_hash, role, name, phone, created_at, updated_at)
+       VALUES ($1, NULL, NULL, 'USER', NULL, $2, NOW(), NOW())`,
+      [guestId, client.phone],
+    );
+    client.userId = guestId;
+    guestUserMap.set(client.phone, guestId);
+  }
+}
+
 // ===== CORE FUNCTIONS =====
 
 async function createFieldsForCampaign(campaignId: string, fields: FieldConfig[]): Promise<string[]> {
@@ -233,7 +364,7 @@ async function createFieldsForCampaign(campaignId: string, fields: FieldConfig[]
       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10, NOW())
     `, [
       fieldId, campaignId, field.name, [field.sport], field.indoor,
-      [`https://via.placeholder.com/800x600?text=${encodeURIComponent(field.name)}`],
+      [getFieldPhoto(field.sport)],
       field.price, field.duration, makeFieldTimetable(field), field.info,
     ]);
   }
@@ -428,9 +559,20 @@ async function main() {
     const passwordHash = await bcrypt.hash('demo123', 12);
 
     // ================================================================
+    // STEP 0: Clean data from previous demo runs
+    // ================================================================
+    console.log('0️⃣  Cleaning previous demo data...');
+    await pool.query('DELETE FROM admin_audit_log');
+    await pool.query('DELETE FROM campaign_status_log');
+    // Guest users (email IS NULL) created by previous demo runs
+    // CASCADE will clean their bookings too
+    await pool.query('DELETE FROM users WHERE email IS NULL');
+    console.log('   ✅ Cleaned audit_log, status_log, guest users');
+
+    // ================================================================
     // STEP 1: Update existing campaigns + clean old data
     // ================================================================
-    console.log('1️⃣  Updating existing campaigns...');
+    console.log('\n1️⃣  Updating existing campaigns...');
 
     // Campaign #1: СпортПарк Казань
     await pool.query(`
@@ -438,54 +580,64 @@ async function main() {
         name = $1, description = $2, short_description = $3,
         location = $4, contacts = $5, working_timetable = $6,
         socials_links = $7, payment_methods = $8, facilities = $9,
-        booking_info = $10, timezone_id = $11
+        booking_info = $10, timezone_id = $11, media = $13
       WHERE id = $12
     `, [
       'СпортПарк Казань',
       'Современный спортивный комплекс с открытыми и крытыми площадками для футбола, тенниса и баскетбола. 5 полей, парковка, раздевалки, кафе.',
       'Футбол, теннис, баскетбол — всё в одном месте',
-      JSON.stringify({ city: 'Казань', address: 'ул. Спортивная, 15', lat: 55.7887, lng: 49.1221 }),
-      JSON.stringify({ phone: '79991234567', email: 'arena@sportpark-kzn.ru' }),
+      JSON.stringify({ city: 'Казань', street: 'ул. Спортивная', house: '15', coordinates: '55.7887,49.1221' }),
+      JSON.stringify({ phone: formatDisplayPhone('79991234567'), email: 'arena@sportpark-kzn.ru' }),
       JSON.stringify({
         monday: { from: '08:00', to: '23:00' }, tuesday: { from: '08:00', to: '23:00' },
         wednesday: { from: '08:00', to: '23:00' }, thursday: { from: '08:00', to: '23:00' },
         friday: { from: '08:00', to: '23:00' }, saturday: { from: '08:00', to: '23:00' },
         sunday: { from: '09:00', to: '22:00' },
       }),
-      JSON.stringify([{ type: 'VK', url: 'https://vk.com/sportpark_kzn' }, { type: 'TELEGRAM', url: 'https://t.me/sportpark_kzn' }]),
+      JSON.stringify([{ link_type: 'VK', link: 'https://vk.com/sportpark_kzn' }, { link_type: 'TELEGRAM', link: 'https://t.me/sportpark_kzn' }]),
       ['MONEY', 'CARD', 'SBP'],
       ['PARKING', 'SHOWER', 'LOCKER_ROOM', 'WIFI', 'LIGHTING', 'CAFE', 'RENTAL'],
       'Вход со стороны ул. Спортивная. Парковка бесплатная. Раздевалки на 1 этаже.',
       'Europe/Moscow',
       EXISTING_CAMPAIGN_1.id,
+      JSON.stringify({
+        main_src: CAMPAIGN_PHOTOS['СпортПарк Казань'].main,
+        description: 'Главное фото комплекса',
+        extra_media: CAMPAIGN_PHOTOS['СпортПарк Казань'].extra.map(src => ({ src, description: 'Дополнительное фото' })),
+      }),
     ]);
 
-    // Campaign #2: Теннисный клуб "Победа"
+    // Campaign #2: Теннисный клуб "Победа" Казань
     await pool.query(`
       UPDATE campaign_info SET
         name = $1, description = $2, short_description = $3,
         location = $4, contacts = $5, working_timetable = $6,
         socials_links = $7, payment_methods = $8, facilities = $9,
-        booking_info = $10, timezone_id = $11
+        booking_info = $10, timezone_id = $11, media = $13
       WHERE id = $12
     `, [
-      'Теннисный клуб "Победа"',
+      'Теннисный клуб "Победа" Казань',
       'Профессиональные теннисные корты с покрытием хард и грунт. Крытые и открытые корты, тренировочная зона. Работаем круглый год.',
-      'Профессиональные теннисные корты в центре Москвы',
-      JSON.stringify({ city: 'Москва', address: 'ул. Теннисная, 5', lat: 55.755244, lng: 37.615423 }),
-      JSON.stringify({ phone: '74959876543', email: 'info@pobeda-tennis.ru' }),
+      'Профессиональные теннисные корты в Казани',
+      JSON.stringify({ city: 'Казань', street: 'ул. Теннисная', house: '5', coordinates: '55.8304,49.0661' }),
+      JSON.stringify({ phone: formatDisplayPhone('78431234567'), email: 'info@pobeda-tennis-kzn.ru' }),
       JSON.stringify({
         monday: { from: '07:00', to: '23:00' }, tuesday: { from: '07:00', to: '23:00' },
         wednesday: { from: '07:00', to: '23:00' }, thursday: { from: '07:00', to: '23:00' },
         friday: { from: '07:00', to: '23:00' }, saturday: { from: '08:00', to: '23:00' },
         sunday: { from: '08:00', to: '22:00' },
       }),
-      JSON.stringify([{ type: 'WHATS_APP', url: 'https://wa.me/74959876543' }, { type: 'VK', url: 'https://vk.com/pobeda_tennis' }]),
+      JSON.stringify([{ link_type: 'TELEGRAM', link: 'https://t.me/pobeda_tennis_kzn' }, { link_type: 'VK', link: 'https://vk.com/pobeda_tennis_kzn' }]),
       ['MONEY', 'CARD'],
       ['PARKING', 'SHOWER', 'LOCKER_ROOM', 'CAFE', 'RENTAL'],
       'Ракетки и мячи в аренду. При первом посещении обратитесь к администратору.',
       'Europe/Moscow',
       EXISTING_CAMPAIGN_2.id,
+      JSON.stringify({
+        main_src: CAMPAIGN_PHOTOS['Теннисный клуб "Победа" Казань'].main,
+        description: 'Главное фото клуба',
+        extra_media: CAMPAIGN_PHOTOS['Теннисный клуб "Победа" Казань'].extra.map(src => ({ src, description: 'Дополнительное фото' })),
+      }),
     ]);
 
     // Clean old fields (CASCADE: fields → booking_slots → bookings)
@@ -522,58 +674,58 @@ async function main() {
 
     const campaignDefs = [
       {
-        name: 'ФутАрена Москва', status: 'published' as const, fields: CAMPAIGN_3_FIELDS, bookingsTarget: 1200,
-        description: 'Профессиональные футбольные поля в Москве. Полноразмерное поле, два мини-поля и крытый манеж. Парковка, раздевалки, кафе.',
-        shortDescription: 'Профессиональные футбольные поля в Москве',
-        city: 'Москва', address: 'ул. Футбольная, 28', lat: 55.76, lng: 37.64, tz: 'Europe/Moscow',
-        phone: '74951112233', email: 'info@futarena.ru',
-        socials: [{ type: 'VK', url: 'https://vk.com/futarena_msk' }],
+        name: 'ФутАрена Казань', status: 'published' as const, fields: CAMPAIGN_3_FIELDS, bookingsTarget: 1200,
+        description: 'Профессиональные футбольные поля в Казани. Полноразмерное поле, два мини-поля и крытый манеж. Парковка, раздевалки, кафе.',
+        shortDescription: 'Профессиональные футбольные поля в Казани',
+        city: 'Казань', street: 'ул. Футбольная', house: '28', lat: 55.7950, lng: 49.1068, tz: 'Europe/Moscow',
+        phone: '78432112233', email: 'info@futarena-kzn.ru',
+        socials: [{ link_type: 'VK', link: 'https://vk.com/futarena_kzn' }],
         payments: ['MONEY', 'CARD', 'SBP'], facilities: ['PARKING', 'SHOWER', 'LOCKER_ROOM', 'LIGHTING', 'CAFE'],
         bookingInfo: 'Мячи предоставляются. Форму брать свою. Парковка у входа.',
       },
       {
         name: 'Баскет Центр', status: 'published' as const, fields: CAMPAIGN_4_FIELDS, bookingsTarget: 800,
-        description: 'Баскетбольный и волейбольный центр в Екатеринбурге. Два зала и волейбольная площадка. Проводим турниры и тренировки.',
-        shortDescription: 'Баскетбол и волейбол в Екатеринбурге',
-        city: 'Екатеринбург', address: 'ул. Баскетбольная, 10', lat: 56.84, lng: 60.61, tz: 'Asia/Yekaterinburg',
-        phone: '73431234567', email: 'info@basket-ekb.ru',
-        socials: [{ type: 'TELEGRAM', url: 'https://t.me/basket_ekb' }],
+        description: 'Баскетбольный и волейбольный центр в Казани. Два зала и волейбольная площадка. Проводим турниры и тренировки.',
+        shortDescription: 'Баскетбол и волейбол в Казани',
+        city: 'Казань', street: 'ул. Баскетбольная', house: '10', lat: 55.8100, lng: 49.0900, tz: 'Europe/Moscow',
+        phone: '78433234567', email: 'info@basket-kzn.ru',
+        socials: [{ link_type: 'TELEGRAM', link: 'https://t.me/basket_kzn' }],
         payments: ['MONEY', 'CARD'], facilities: ['PARKING', 'SHOWER', 'LOCKER_ROOM', 'WIFI'],
         bookingInfo: 'Мячи предоставляются. Абонемент по запросу.',
       },
       {
-        name: 'Теннис Плюс Сочи', status: 'pending' as const, fields: CAMPAIGN_5_FIELDS, bookingsTarget: 0,
-        description: 'Теннисный клуб у моря. 3 открытых корта с видом на горы и 1 крытый корт. Профессиональные покрытия, аренда инвентаря.',
-        shortDescription: 'Теннис у моря с видом на горы',
-        city: 'Сочи', address: 'ул. Приморская, 42', lat: 43.59, lng: 39.72, tz: 'Europe/Moscow',
-        phone: '78621234567', email: 'info@tennis-sochi.ru',
-        socials: [{ type: 'VK', url: 'https://vk.com/tennis_sochi' }],
+        name: 'Теннис Плюс Казань', status: 'pending' as const, fields: CAMPAIGN_5_FIELDS, bookingsTarget: 0,
+        description: 'Теннисный клуб в Казани. 3 открытых корта и 1 крытый корт. Профессиональные покрытия, аренда инвентаря.',
+        shortDescription: 'Теннис в Казани — 4 профессиональных корта',
+        city: 'Казань', street: 'ул. Приморская', house: '42', lat: 55.7720, lng: 49.1150, tz: 'Europe/Moscow',
+        phone: '78434234567', email: 'info@tennis-kzn.ru',
+        socials: [{ link_type: 'VK', link: 'https://vk.com/tennis_kzn' }],
         payments: ['CARD', 'SBP'], facilities: ['PARKING', 'SHOWER', 'LOCKER_ROOM', 'WIFI', 'CAFE', 'RENTAL'],
-        bookingInfo: 'Ракетки в аренду. Кафе с видом на море.',
+        bookingInfo: 'Ракетки в аренду. Кафе на территории.',
       },
       {
-        name: 'Мини-Футбол НСК', status: 'pending' as const, fields: CAMPAIGN_6_FIELDS, bookingsTarget: 0,
-        description: 'Два крытых зала и открытая площадка для мини-футбола в Новосибирске. Искусственное покрытие, подогрев, освещение.',
-        shortDescription: 'Мини-футбол в Новосибирске',
-        city: 'Новосибирск', address: 'ул. Спортивная, 88', lat: 55.01, lng: 82.94, tz: 'Asia/Novosibirsk',
-        phone: '73831234567', email: 'info@minifut-nsk.ru',
-        socials: [{ type: 'TELEGRAM', url: 'https://t.me/minifut_nsk' }],
+        name: 'Мини-Футбол Казань', status: 'pending' as const, fields: CAMPAIGN_6_FIELDS, bookingsTarget: 0,
+        description: 'Два крытых зала и открытая площадка для мини-футбола в Казани. Искусственное покрытие, подогрев, освещение.',
+        shortDescription: 'Мини-футбол в Казани',
+        city: 'Казань', street: 'ул. Спортивная', house: '88', lat: 55.7650, lng: 49.1300, tz: 'Europe/Moscow',
+        phone: '78435234567', email: 'info@minifut-kzn.ru',
+        socials: [{ link_type: 'TELEGRAM', link: 'https://t.me/minifut_kzn' }],
         payments: ['MONEY', 'CARD'], facilities: ['PARKING', 'SHOWER', 'LOCKER_ROOM', 'LIGHTING'],
         bookingInfo: 'Мячи предоставляются. Душевые на 1 этаже.',
       },
       {
-        name: 'Спорт Комплекс Юг', status: 'draft' as const, fields: [] as FieldConfig[], bookingsTarget: 0,
+        name: 'Спорт Комплекс Казань', status: 'draft' as const, fields: [] as FieldConfig[], bookingsTarget: 0,
         description: '', shortDescription: '',
-        city: 'Сочи', address: '', lat: 43.58, lng: 39.73, tz: 'Europe/Moscow',
+        city: 'Казань', street: '', house: '', lat: 55.78, lng: 49.12, tz: 'Europe/Moscow',
         phone: '', email: '',
         socials: [], payments: [] as string[], facilities: [] as string[],
         bookingInfo: '',
       },
       {
-        name: 'Баскет Холл НН', status: 'draft' as const, fields: CAMPAIGN_8_FIELDS, bookingsTarget: 0,
-        description: 'Баскетбольный зал в Нижнем Новгороде.', shortDescription: 'Баскетбол в Нижнем Новгороде',
-        city: 'Нижний Новгород', address: 'ул. Горького, 15', lat: 56.30, lng: 43.94, tz: 'Europe/Moscow',
-        phone: '78311234567', email: '',
+        name: 'Баскет Холл Казань', status: 'draft' as const, fields: CAMPAIGN_8_FIELDS, bookingsTarget: 0,
+        description: 'Баскетбольный зал в Казани.', shortDescription: 'Баскетбол в Казани',
+        city: 'Казань', street: 'ул. Горького', house: '15', lat: 55.7550, lng: 49.1400, tz: 'Europe/Moscow',
+        phone: '78436234567', email: '',
         socials: [], payments: ['CARD'], facilities: ['SHOWER'],
         bookingInfo: '',
       },
@@ -593,22 +745,31 @@ async function main() {
         sunday: { from: '09:00', to: '22:00' },
       });
 
+      // Build media JSON from photo bank
+      const campaignMedia = CAMPAIGN_PHOTOS[def.name];
+      const mediaJson = campaignMedia ? JSON.stringify({
+        main_src: campaignMedia.main,
+        description: 'Главное фото площадки',
+        extra_media: campaignMedia.extra.map(src => ({ src, description: 'Дополнительное фото' })),
+      }) : null;
+
       await pool.query(`
         INSERT INTO campaign_info (
           id, user_id, name, description, short_description,
           location, contacts, working_timetable, socials_links,
           payment_methods, facilities, booking_info, status, timezone_id,
-          created_at, updated_at
-        ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+          media, created_at, updated_at
+        ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $15, $14, $14)
       `, [
         campaignId, def.name, def.description || null, def.shortDescription || null,
-        JSON.stringify({ city: def.city, address: def.address, lat: def.lat, lng: def.lng }),
-        def.phone ? JSON.stringify({ phone: def.phone, email: def.email }) : null,
+        JSON.stringify({ city: def.city, street: def.street, house: def.house, coordinates: `${def.lat},${def.lng}` }),
+        def.phone ? JSON.stringify({ phone: formatDisplayPhone(def.phone), email: def.email }) : null,
         timetable,
         def.socials.length > 0 ? JSON.stringify(def.socials) : null,
         def.payments.length > 0 ? def.payments : null,
         def.facilities.length > 0 ? def.facilities : null,
         def.bookingInfo || null, def.status, def.tz, createdAtStr,
+        mediaJson,
       ]);
 
       // Create owner user (now campaign exists, so FK is valid)
@@ -678,11 +839,13 @@ async function main() {
 
     // Campaign #1: users[0..199], 100 guests → ~2000
     const c1Clients = buildClientFrequency(allUsers.slice(0, 200), 100, 2000);
+    await ensureGuestUsers(c1Clients);
     const c1Stats = await generateBookingsForCampaign(CAMPAIGN_1_FIELDS, c1FieldIds, c1Clients);
     console.log(`   ✅ СпортПарк Казань: ${c1Stats.total} bookings (${c1Stats.skipped} skipped)`);
 
     // Campaign #2: users[50..149], 40 guests → ~400
     const c2Clients = buildClientFrequency(allUsers.slice(50, 150), 40, 400);
+    await ensureGuestUsers(c2Clients);
     const c2Stats = await generateBookingsForCampaign(CAMPAIGN_2_FIELDS, c2FieldIds, c2Clients);
     console.log(`   ✅ Победа: ${c2Stats.total} bookings (${c2Stats.skipped} skipped)`);
 
@@ -696,6 +859,7 @@ async function main() {
       const [fromIdx, toIdx] = campaignUserRanges[i];
       const guestCount = campaignGuestCounts[i];
       const clients = buildClientFrequency(allUsers.slice(fromIdx, toIdx), guestCount, c.bookingsTarget);
+      await ensureGuestUsers(clients);
       const stats = await generateBookingsForCampaign(c.fields, c.fieldIds, clients);
       console.log(`   ✅ ${c.name}: ${stats.total} bookings (${stats.skipped} skipped)`);
     }
@@ -747,7 +911,7 @@ async function main() {
     }
 
     // campaign.rejected (for pending campaign #6 which was rejected once)
-    const rejectedCampaign = newCampaigns.find(c => c.name === 'Мини-Футбол НСК');
+    const rejectedCampaign = newCampaigns.find(c => c.name === 'Мини-Футбол Казань');
     if (rejectedCampaign) {
       auditEntries.push({
         eventType: 'campaign.rejected', actorId: ADMIN_USER_ID, actorEmail: ADMIN_EMAIL,
@@ -859,8 +1023,8 @@ async function main() {
       );
       statusLogCount++;
 
-      // Campaign #6 (Мини-Футбол НСК) was rejected and resubmitted
-      if (c.name === 'Мини-Футбол НСК') {
+      // Campaign #6 (Мини-Футбол Казань) was rejected and resubmitted
+      if (c.name === 'Мини-Футбол Казань') {
         // pending → draft (rejected)
         await pool.query(
           `INSERT INTO campaign_status_log (campaign_id, old_status, new_status, changed_by, reason, created_at)

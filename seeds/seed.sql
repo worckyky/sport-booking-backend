@@ -4,6 +4,15 @@
 -- Clean existing data (in reverse order of dependencies)
 TRUNCATE TABLE bookings, booking_slots, fields, password_reset_tokens, registration_links, invitations, users, campaign_info CASCADE;
 
+-- Ensure platform_settings have defaults
+INSERT INTO platform_settings (key, value) VALUES
+  ('booking_limit_per_user', '10'),
+  ('booking_rate_limit_per_min', '5'),
+  ('registration_link_ttl_days', '7'),
+  ('invitation_ttl_days', '7'),
+  ('default_timezone', '"Europe/Moscow"')
+ON CONFLICT (key) DO NOTHING;
+
 -- =====================================================
 -- 1. CAMPAIGN INFO (created first for foreign key)
 -- =====================================================
@@ -28,10 +37,10 @@ INSERT INTO campaign_info (
   'Спортивный комплекс "Арена"',
   'Современный спортивный комплекс в центре города с профессиональными кортами и залами. У нас вы найдете все необходимое для занятий спортом: футбольные поля с искусственным покрытием, баскетбольные корты, теннисные корты.',
   'Современный спортивный комплекс с профессиональными кортами',
-  '{"city": "Москва", "street": "ул. Спортивная, д. 10", "address": "ул. Спортивная, д. 10", "coordinates": {"lat": 55.751244, "lon": 37.618423}}'::jsonb,
+  '{"city": "Казань", "street": "ул. Спортивная", "house": "д. 10", "coordinates": "55.7887,49.1221"}'::jsonb,
   '{"phone": "+7 (495) 123-45-67", "email": "info@arena-sport.ru"}'::jsonb,
   '{"monday": {"from": "08:00", "to": "23:00"}, "tuesday": {"from": "08:00", "to": "23:00"}, "wednesday": {"from": "08:00", "to": "23:00"}, "thursday": {"from": "08:00", "to": "23:00"}, "friday": {"from": "08:00", "to": "23:00"}, "saturday": {"from": "09:00", "to": "22:00"}, "sunday": {"from": "09:00", "to": "22:00"}}'::jsonb,
-  '[{"type": "VK", "url": "https://vk.com/arena_sport"}, {"type": "TELEGRAM", "url": "https://t.me/arena_sport"}]'::jsonb,
+  '[{"link_type": "VK", "link": "https://vk.com/arena_sport"}, {"link_type": "TELEGRAM", "link": "https://t.me/arena_sport"}]'::jsonb,
   ARRAY['MONEY', 'CARD', 'SBP'],
   ARRAY['PARKING', 'SHOWER', 'LOCKER_ROOM', 'WIFI', 'LIGHTING', 'CAFE', 'RENTAL', 'VIDEO_SURVEILLANCE'],
   '{
@@ -70,10 +79,10 @@ INSERT INTO campaign_info (
   'Теннисный клуб "Победа"',
   'Профессиональные теннисные корты с покрытием харт. Работаем круглый год. Есть крытые и открытые корты.',
   'Профессиональные теннисные корты',
-  '{"city": "Москва", "street": "ул. Теннисная, д. 5", "address": "ул. Теннисная, д. 5", "coordinates": {"lat": 55.755244, "lon": 37.615423}}'::jsonb,
+  '{"city": "Казань", "street": "ул. Теннисная", "house": "д. 5", "coordinates": "55.8304,49.0661"}'::jsonb,
   '{"phone": "+7 (495) 987-65-43", "email": "info@pobeda-tennis.ru"}'::jsonb,
   '{"monday": {"from": "07:00", "to": "23:00"}, "tuesday": {"from": "07:00", "to": "23:00"}, "wednesday": {"from": "07:00", "to": "23:00"}, "thursday": {"from": "07:00", "to": "23:00"}, "friday": {"from": "07:00", "to": "23:00"}, "saturday": {"from": "08:00", "to": "23:00"}, "sunday": {"from": "08:00", "to": "23:00"}}'::jsonb,
-  '[{"type": "WHATS_APP", "url": "https://wa.me/74959876543"}]'::jsonb,
+  '[{"link_type": "VK", "link": "https://vk.com/pobeda_tennis_kzn"}]'::jsonb,
   ARRAY['MONEY', 'CARD'],
   ARRAY['PARKING', 'SHOWER', 'LOCKER_ROOM', 'CAFE', 'RENTAL'],
   '{
@@ -108,7 +117,7 @@ INSERT INTO users (
   '$2b$10$rqZ1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQ', -- test123
   'USER',
   'Иван Петров',
-  '+79161234567',
+  '79161234567',
   'VERIFIED',
   NULL,
   false
@@ -120,7 +129,7 @@ INSERT INTO users (
   '$2b$10$rqZ1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQ', -- test123
   'CAMPAIGN',
   'Спортивный комплекс "Арена"',
-  '+74951234567',
+  '74951234567',
   'VERIFIED',
   '550e8400-e29b-41d4-a716-446655440001',
   false
@@ -132,7 +141,7 @@ INSERT INTO users (
   '$2b$10$rqZ1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQ', -- test123
   'CAMPAIGN',
   'Теннисный клуб "Победа"',
-  '+74959876543',
+  '74959876543',
   'VERIFIED',
   '550e8400-e29b-41d4-a716-446655440002',
   false
@@ -144,7 +153,7 @@ INSERT INTO users (
   '$2b$10$rqZ1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQ', -- test123
   'ADMIN',
   'Администратор Системы',
-  '+79167654321',
+  '79167654321',
   'VERIFIED',
   NULL,
   false
@@ -156,7 +165,7 @@ INSERT INTO users (
   '$2b$10$rqZ1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQ', -- test123
   'USER',
   'Мария Сидорова',
-  '+79167777777',
+  '79167777777',
   'VERIFIED',
   NULL,
   false
@@ -167,7 +176,7 @@ INSERT INTO users (
   '$2b$10$rqZ1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQK5x9X9X9X9O5Z1qhQX8ZQ', -- test123
   'USER',
   'Алексей Иванов',
-  '+79168888888',
+  '79168888888',
   'NOT_VERIFIED',
   NULL,
   false
@@ -187,6 +196,10 @@ INSERT INTO fields (
   price_per_hour,
   sport_types,
   is_indoor,
+  photos,
+  status,
+  slot_duration,
+  client_info,
   working_timetable
 ) VALUES
 -- Arena fields
@@ -197,6 +210,10 @@ INSERT INTO fields (
   2000.00,
   ARRAY['FOOTBALL']::text[],
   false,
+  ARRAY['https://images.unsplash.com/photo-1529900748604-07564a03e7a6?w=800&h=600&fit=crop'],
+  'active',
+  60,
+  'Натуральный газон, размер 60×40м. Мячи в аренду на ресепшен.',
   NULL -- inherits from campaign
 ),
 (
@@ -206,6 +223,10 @@ INSERT INTO fields (
   2000.00,
   ARRAY['FOOTBALL']::text[],
   false,
+  ARRAY['https://images.unsplash.com/photo-1518604666860-9ed391f76460?w=800&h=600&fit=crop'],
+  'active',
+  60,
+  'Искусственный газон, размер 40×25м. Освещение включено в стоимость.',
   NULL
 ),
 (
@@ -215,6 +236,10 @@ INSERT INTO fields (
   1500.00,
   ARRAY['BASKETBALL']::text[],
   true,
+  ARRAY['https://images.unsplash.com/photo-1546519638-68e109498ffc?w=800&h=600&fit=crop'],
+  'active',
+  60,
+  'Крытый баскетбольный корт с профессиональными кольцами.',
   '{"monday": {"from": "10:00", "to": "22:00", "breaks": [{"from": "13:00", "to": "14:00", "reason": "Технический перерыв"}]}}'::jsonb
 ),
 (
@@ -224,6 +249,10 @@ INSERT INTO fields (
   1000.00,
   ARRAY['TENNIS']::text[],
   false,
+  ARRAY['https://images.unsplash.com/photo-1554068865-24cecd4e34b8?w=800&h=600&fit=crop'],
+  'active',
+  60,
+  'Открытый теннисный корт. Ракетки и мячи в аренду.',
   NULL
 ),
 -- Pobeda fields
@@ -234,6 +263,10 @@ INSERT INTO fields (
   1500.00,
   ARRAY['TENNIS']::text[],
   true,
+  ARRAY['https://images.unsplash.com/photo-1622279457486-62dcc4a431d6?w=800&h=600&fit=crop'],
+  'active',
+  60,
+  'Крытый корт с хард-покрытием. Ракетки и мячи в аренду.',
   NULL
 ),
 (
@@ -243,6 +276,10 @@ INSERT INTO fields (
   1200.00,
   ARRAY['TENNIS']::text[],
   false,
+  ARRAY['https://images.unsplash.com/photo-1595435934249-5df7ed86e1c0?w=800&h=600&fit=crop'],
+  'active',
+  60,
+  'Открытый грунтовый корт.',
   NULL
 );
 
@@ -277,45 +314,57 @@ FROM
 -- 5. BOOKINGS (sample bookings)
 -- =====================================================
 -- Create some confirmed bookings for user 1 (today)
-INSERT INTO bookings (id, slot_id, user_id, status, contact_name, contact_phone)
+INSERT INTO bookings (id, slot_id, user_id, status, contact_name, contact_phone, field_name, field_price, sport_type)
 SELECT
   gen_random_uuid(),
   bs.id,
   '110e8400-e29b-41d4-a716-446655440001',
   'confirmed',
   'Иван Петров',
-  '+79161234567'
+  '79161234567',
+  f.name,
+  f.price_per_hour,
+  f.sport_types[1]
 FROM booking_slots bs
+JOIN fields f ON bs.field_id = f.id
 WHERE bs.field_id = '660e8400-e29b-41d4-a716-446655440001'
   AND bs.date = CURRENT_DATE
   AND bs.start_time IN ('10:00', '11:00', '14:00')
 LIMIT 3;
 
 -- Create pending booking for user 2 (tomorrow)
-INSERT INTO bookings (id, slot_id, user_id, status, contact_name, contact_phone)
+INSERT INTO bookings (id, slot_id, user_id, status, contact_name, contact_phone, field_name, field_price, sport_type)
 SELECT
   gen_random_uuid(),
   bs.id,
   '110e8400-e29b-41d4-a716-446655440002',
   'pending',
   'Мария Сидорова',
-  '+79167777777'
+  '79167777777',
+  f.name,
+  f.price_per_hour,
+  f.sport_types[1]
 FROM booking_slots bs
+JOIN fields f ON bs.field_id = f.id
 WHERE bs.field_id = '660e8400-e29b-41d4-a716-446655440004'
   AND bs.date = CURRENT_DATE + 1
   AND bs.start_time = '16:00'
 LIMIT 1;
 
 -- Create confirmed booking for user 3 (day after tomorrow)
-INSERT INTO bookings (id, slot_id, user_id, status, contact_name, contact_phone)
+INSERT INTO bookings (id, slot_id, user_id, status, contact_name, contact_phone, field_name, field_price, sport_type)
 SELECT
   gen_random_uuid(),
   bs.id,
   '110e8400-e29b-41d4-a716-446655440003',
   'confirmed',
   'Алексей Иванов',
-  '+79168888888'
+  '79168888888',
+  f.name,
+  f.price_per_hour,
+  f.sport_types[1]
 FROM booking_slots bs
+JOIN fields f ON bs.field_id = f.id
 WHERE bs.field_id = '660e8400-e29b-41d4-a716-446655440001'
   AND bs.date = CURRENT_DATE + 2
   AND bs.start_time = '18:00'

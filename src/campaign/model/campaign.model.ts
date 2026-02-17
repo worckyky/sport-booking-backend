@@ -8,7 +8,7 @@ export enum CampaignStatus {
 export enum SocialLinkType {
   VK = 'VK',
   TELEGRAM = 'TELEGRAM',
-  WHATS_APP = 'WHATS_APP'
+  MAX = 'MAX'
 }
 
 export enum PaymentMethod {

@@ -19,6 +19,7 @@ import { bruteForcePrevention, recordLoginAttempt } from '../middleware/brute-fo
 import type { DbUser } from '../model/user.model';
 import { AuditAPI, AUDIT_EVENTS } from '../../audit/audit.api';
 import { validatePassword } from '../../utils/validators';
+import { normalizePhone } from '../../utils/phone';
 
 export class AuthRoutes {
   private router: Router;
@@ -255,7 +256,12 @@ export class AuthRoutes {
         }
 
         const updates = req.body;
-        
+
+        // Нормализуем телефон перед сохранением
+        if (updates.phone !== undefined && updates.phone !== null) {
+          updates.phone = normalizePhone(updates.phone);
+        }
+
         const fields: Array<'role' | 'name' | 'phone' | 'date_of_birth'> = [
           'role',
           'name',

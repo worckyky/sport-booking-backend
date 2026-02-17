@@ -10,6 +10,8 @@ import {
   REGISTRATION_LINK_TTL_DAYS
 } from '../model/registration-link.model';
 
+import { normalizePhone } from '../../utils/phone';
+
 function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
@@ -150,7 +152,7 @@ export class RegistrationLinkAPI {
           passwordHash,
           USER_ROLE.CAMPAIGN,
           name,
-          phone || null,
+          normalizePhone(phone) ?? null,
           EMAIL_STATUS.VERIFIED,
           campaignId,
           now,
