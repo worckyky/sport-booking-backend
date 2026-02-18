@@ -13,7 +13,7 @@ async function seed() {
     console.log(`📦 Connecting to database: ${DATABASE_URL.replace(/:[^:]*@/, ':***@')}`);
 
     // Generate real password hash for test123
-    const passwordHash = await bcrypt.hash('test123', 10);
+    const passwordHash = await bcrypt.hash('test123', 12);
     console.log('🔐 Generated password hash for test users');
 
     // Read seed SQL file

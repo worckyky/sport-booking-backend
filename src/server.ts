@@ -1,29 +1,47 @@
 import express, { Request, Response } from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
+import helmet from 'helmet';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.config';
 import { AuthRoutes } from './authentication/routes/auth.routes';
+import { createInvitationRoutes } from './authentication/routes/invitation.routes';
+import { createRegistrationLinkRoutes } from './authentication/routes/registration-link.routes';
+import { createDictionaryRoutes } from './authentication/routes/dictionary.routes';
 import createCampaignRoutes from './campaign/routes/campaign.routes';
 import createBookingRoutes from './booking/routes/booking.routes';
+import { createAuditRoutes } from './audit/audit.routes';
 import { getJwtSecret } from './config/auth';
 import { getDbPool } from './config/db';
+import { getS3Config } from './config/s3';
 import { runMigrations } from './scripts/migrations';
-import { assertSafeIdentifier, parseSelect, quoteIdentifier } from './utils/sql';
+import createS3Routes from './s3/routes/s3.routes';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
+// Security headers
+app.use(helmet());
+// Response compression
+app.use(compression());
+
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',')
   : ['http://localhost:3000'];
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
+    // In production, reject requests without Origin header (security)
+    // In dev, allow for Postman/curl/Swagger
+    if (!origin) {
+      if (process.env.NODE_ENV === 'production') {
+        return callback(new Error('Origin header required'));
+      }
+      return callback(null, true);
+    }
 
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
@@ -33,16 +51,10 @@ app.use(cors({
   },
   credentials: true
 }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
 // Types
-interface DatabaseQueryRequest {
-  table: string;
-  select?: string;
-  filters?: Record<string, unknown>;
-}
-
 interface HealthResponse {
   status: string;
   timestamp: string;
@@ -51,6 +63,7 @@ interface HealthResponse {
 async function start(): Promise<void> {
   // Database + Auth config (fail fast)
   getJwtSecret();
+  getS3Config();
   const db = getDbPool();
 
   // Apply DB migrations on startup
@@ -58,8 +71,11 @@ async function start(): Promise<void> {
 
   // Initialize routes
   const authRoutes = new AuthRoutes(db);
+  const invitationRoutes = createInvitationRoutes(db);
+  const registrationLinkRoutes = createRegistrationLinkRoutes(db);
   const campaignRoutes = createCampaignRoutes(db);
   const bookingRoutes = createBookingRoutes(db);
+  const s3Routes = createS3Routes(db);
 
   // Swagger UI
   app.use('/api-docs', swaggerUi.serve);
@@ -88,8 +104,13 @@ async function start(): Promise<void> {
 
   // Use routes with rate limiting
   app.use('/auth', authLimiter, authRoutes.getRouter());
+  app.use('/auth', authLimiter, invitationRoutes);
+  app.use('/auth', authLimiter, registrationLinkRoutes);
+  app.use('/auth', authLimiter, createDictionaryRoutes(db));
   app.use('/campaign', campaignRoutes);
   app.use('/booking', bookingLimiter, bookingRoutes);
+  app.use('/s3', s3Routes);
+  app.use('/audit', createAuditRoutes(db));
 
   // Health check endpoint
   app.get('/health', (req: Request, res: Response<HealthResponse>) => {
@@ -108,56 +129,26 @@ async function start(): Promise<void> {
     });
   });
 
-  // Database query endpoint
-  app.post('/db/query', async (req: Request<{}, any, DatabaseQueryRequest>, res: Response) => {
-    try {
-      const { table, select = '*', filters = {} } = req.body;
 
-      if (!table) {
-        return res.status(400).json({ error: 'Table name is required' });
-      }
-
-      assertSafeIdentifier(table, 'table');
-      const columns = parseSelect(select);
-      const safeCols =
-        columns.length === 1 && columns[0] === '*'
-          ? '*'
-          : columns
-              .map((c) => {
-                assertSafeIdentifier(c, 'select column');
-                return quoteIdentifier(c);
-              })
-              .join(', ');
-
-      const whereParts: string[] = [];
-      const values: unknown[] = [];
-      let i = 1;
-      for (const [key, value] of Object.entries(filters)) {
-        assertSafeIdentifier(key, 'filter column');
-        whereParts.push(`${quoteIdentifier(key)} = $${i}`);
-        values.push(value);
-        i += 1;
-      }
-
-      const sql =
-        whereParts.length === 0
-          ? `select ${safeCols} from ${quoteIdentifier(table)}`
-          : `select ${safeCols} from ${quoteIdentifier(table)} where ${whereParts.join(' and ')}`;
-
-      const result = await db.query(sql, values);
-      res.json(result.rows);
-    } catch (error) {
-      if (error instanceof Error) {
-        res.status(400).json({ error: error.message });
-      } else {
-        res.status(500).json({ error: 'Internal server error' });
-      }
-    }
-  });
-
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
+
+  // Graceful shutdown
+  const shutdown = async (signal: string) => {
+    console.log(`${signal} received, shutting down...`);
+    server.close(() => {
+      db.end().then(() => {
+        console.log('Pool closed');
+        process.exit(0);
+      });
+    });
+    // Force exit after 10s if graceful shutdown stalls
+    setTimeout(() => process.exit(1), 10000);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 start().catch((error: unknown) => {

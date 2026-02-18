@@ -36,6 +36,7 @@ export interface Field {
   working_days: string[];                 // DEPRECATED - use working_timetable
   working_timetable: FieldWorkingTimetable | null;  // NEW
   client_info: string | null;
+  pending_photos: string[] | null;        // Фото на модерации (до одобрения суперадмином)
   created_at: string;
   deleted_at: string | null;              // Soft delete timestamp
 }
@@ -110,7 +111,7 @@ export type BookingStatus =
 export interface Booking {
   id: string;
   slot_id: string;
-  user_id: string | null;  // nullable для гостевых бронирований
+  user_id: string | null;  // у гостей тоже есть user_id (guest user record)
   status: BookingStatus;
   comment: string | null;
   contact_name: string | null;
@@ -138,6 +139,7 @@ export interface SlotWithBooking extends BookingSlot {
     status: BookingStatus;
     user_name: string | null;   // из профиля или contact_name
     user_phone: string | null;  // из профиля или contact_phone
+    is_registered: boolean;     // true = зарегистрирован в системе
   } | null;
 }
 
@@ -152,4 +154,66 @@ export interface BookingDetails extends Booking {
   field: Field;
   user?: BookingUser;
   campaign_timezone_id?: string;  // IANA timezone ID (e.g., 'Europe/Moscow')
+}
+
+// === Calendar Data (consolidated endpoint) ===
+
+export interface CalendarData {
+  fields: Field[];
+  slots: Record<string, SlotWithBooking[]>; // fieldId → slots
+  timezone: string;
+  stats: { pending: number; confirmed: number; completed: number };
+}
+
+// === Campaign Stats (dashboard aggregations) ===
+
+export interface MonthlyStats {
+  revenue: number;
+  revenueTrend: number;
+  bookingsCount: number;
+  bookingsTrend: number;
+  uniqueClients: {
+    platform: number;
+    manual: number;
+    total: number;
+  };
+  uniqueClientsTrend: number;
+  newClients: number;
+  newClientsTrend: number;
+}
+
+export interface RevenueByDay {
+  date: string;
+  platform: number;
+  manual: number;
+  bookingsCount: number;
+}
+
+export interface WeekOccupancy {
+  percent: number;
+  bookedSlots: number;
+  totalSlots: number;
+}
+
+export interface HeatmapCell {
+  dayOfWeek: number;
+  hour: number;
+  count: number;
+  intensity: number;
+}
+
+export interface CampaignStats {
+  monthly: MonthlyStats;
+  revenueByDay: RevenueByDay[];
+  weekOccupancy: WeekOccupancy;
+  heatmapData: HeatmapCell[];
+  heatmapMinHour: number;
+  heatmapMaxHour: number;
+  dateRanges: {
+    currentStart: string;
+    yesterday: string;
+    revenueStart: string;
+    weekStart: string;
+    weekEnd: string;
+  };
 }

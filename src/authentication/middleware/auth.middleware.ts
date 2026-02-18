@@ -45,10 +45,16 @@ export const authMiddleware = (db: Pool) => {
         return res.status(401).json({ error: 'Unauthorized - Invalid token' });
       }
 
-      // Проверяем что пользователь существует
-      const result = await db.query<{ id: string }>('select id from users where id = $1', [userId]);
+      // Проверяем что пользователь существует и не заблокирован
+      const result = await db.query<{ id: string; is_blocked: boolean }>(
+        'select id, is_blocked from users where id = $1',
+        [userId]
+      );
       if (result.rowCount === 0) {
         return res.status(401).json({ error: 'Unauthorized - User not found' });
+      }
+      if (result.rows[0].is_blocked) {
+        return res.status(403).json({ error: 'Forbidden - Account is blocked' });
       }
 
       // Сохраняем userId в request для использования в роутах

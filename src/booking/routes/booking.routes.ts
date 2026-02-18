@@ -1,21 +1,53 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import jwt from 'jsonwebtoken';
 import { BookingAPI, ScheduleConflictError } from '../api/booking.api';
 import { authMiddleware, AuthRequest } from '../../authentication/middleware/auth.middleware';
 import { adminMiddleware } from '../../authentication/middleware/admin.middleware';
+import { AuditAPI, AUDIT_EVENTS } from '../../audit/audit.api';
 import {
   fieldOwnerMiddleware,
   slotOwnerMiddleware,
   bookingCampaignOwnerMiddleware,
   campaignOwnerMiddleware,
-  notBlockedMiddleware
+  notBlockedMiddleware,
+  activeBookingLimitMiddleware,
+  userRoleMiddleware
 } from '../middleware/booking.middleware';
+import { campaignRoleMiddleware } from '../../campaign/middleware/campaign.middleware';
 import { isValidUUID } from '../../utils/uuid';
 import { Errors, ErrorCode, handleError, sendError } from '../../utils/errors';
+import { validateSportTypes } from '../../utils/validators';
 
 export default function createBookingRoutes(db: Pool): Router {
   const router = Router();
   const api = new BookingAPI(db);
+  const auditAPI = new AuditAPI(db);
+
+  // Per-user rate limit для создания бронирований (строже чем общий bookingLimiter)
+  const createBookingLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 минута
+    max: process.env.NODE_ENV === 'production' ? 5 : 100,
+    keyGenerator: (req: Request) => {
+      // Извлекаем userId из JWT cookie для per-user лимита
+      const token = req.cookies?.auth_token;
+      if (token) {
+        try {
+          const decoded = jwt.decode(token) as { sub?: string } | null;
+          if (decoded?.sub) return `create-booking:user:${decoded.sub}`;
+        } catch {}
+      }
+      // Для IP используем ipKeyGenerator для поддержки IPv6
+      const ip = req.ip || req.headers['x-forwarded-for'] as string || 'unknown';
+      return `create-booking:ip:${ipKeyGenerator(ip)}`;
+    },
+    message: {
+      error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Слишком много попыток бронирования, подождите минуту' }
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
 
   // ==================== FIELDS ====================
 
@@ -89,8 +121,9 @@ export default function createBookingRoutes(db: Pool): Router {
           res.status(400).json({ error: 'campaign_id and name are required' });
           return;
         }
-        if (!sport_types || !Array.isArray(sport_types) || sport_types.length === 0) {
-          res.status(400).json({ error: 'sport_types array is required' });
+        const sportErr = await validateSportTypes(db, sport_types);
+        if (sportErr) {
+          res.status(400).json({ error: sportErr });
           return;
         }
         if (typeof is_indoor !== 'boolean') {
@@ -101,8 +134,19 @@ export default function createBookingRoutes(db: Pool): Router {
           res.status(400).json({ error: 'At least one photo is required' });
           return;
         }
-        if (typeof price_per_hour !== 'number' || price_per_hour <= 0) {
-          res.status(400).json({ error: 'price_per_hour must be a positive number' });
+        if (typeof price_per_hour !== 'number' || price_per_hour <= 0 || price_per_hour > 100000) {
+          res.status(400).json({ error: 'price_per_hour must be between 1 and 100000' });
+          return;
+        }
+        if (slot_duration !== undefined && (typeof slot_duration !== 'number' || slot_duration < 15 || slot_duration > 480)) {
+          res.status(400).json({ error: 'slot_duration must be between 15 and 480 minutes' });
+          return;
+        }
+
+        // Проверка лимита полей на площадку (VAL-08)
+        const existingFields = await api.getFieldsByCampaign(campaign_id);
+        if (existingFields.length >= 50) {
+          res.status(400).json({ error: 'Maximum 50 fields per campaign' });
           return;
         }
 
@@ -128,6 +172,27 @@ export default function createBookingRoutes(db: Pool): Router {
           name, sport_types, is_indoor, photos, price_per_hour, status,
           slot_duration, working_hours_from, working_hours_to, working_days, working_timetable, client_info
         } = req.body;
+
+        // Валидация sport_types если передан
+        if (sport_types !== undefined) {
+          const sportErr = await validateSportTypes(db, sport_types);
+          if (sportErr) {
+            res.status(400).json({ error: sportErr });
+            return;
+          }
+        }
+
+        // Валидация price_per_hour если передан
+        if (price_per_hour !== undefined && (typeof price_per_hour !== 'number' || price_per_hour <= 0 || price_per_hour > 100000)) {
+          res.status(400).json({ error: 'price_per_hour must be between 1 and 100000' });
+          return;
+        }
+
+        // Валидация slot_duration если передан
+        if (slot_duration !== undefined && (typeof slot_duration !== 'number' || slot_duration < 15 || slot_duration > 480)) {
+          res.status(400).json({ error: 'slot_duration must be between 15 and 480 minutes' });
+          return;
+        }
 
         // Валидация status если передан
         if (status !== undefined) {
@@ -175,8 +240,55 @@ export default function createBookingRoutes(db: Pool): Router {
         }
         res.status(204).send();
       } catch (error) {
-        if ((error as Error).message.includes('active bookings')) {
+        const msg = (error as Error).message;
+        if (msg.includes('active bookings')) {
           res.status(409).json({ error: 'Cannot delete field with active bookings' });
+        } else if (msg.includes('last field')) {
+          res.status(400).json({ error: msg });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    }
+  );
+
+  // ==================== FIELD PHOTOS MODERATION (ADMIN) ====================
+
+  // PUT /booking/fields/:id/approve-photos — одобрить фото поля (суперадмин)
+  router.put(
+    '/fields/:id/approve-photos',
+    adminMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const field = await api.approveFieldPhotos(req.params.id);
+        res.json(field);
+      } catch (error) {
+        const msg = (error as Error).message;
+        if (msg.includes('not found')) {
+          res.status(404).json({ error: msg });
+        } else if (msg.includes('No pending')) {
+          res.status(400).json({ error: msg });
+        } else {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    }
+  );
+
+  // PUT /booking/fields/:id/reject-photos — отклонить фото поля (суперадмин)
+  router.put(
+    '/fields/:id/reject-photos',
+    adminMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const field = await api.rejectFieldPhotos(req.params.id);
+        res.json(field);
+      } catch (error) {
+        const msg = (error as Error).message;
+        if (msg.includes('not found')) {
+          res.status(404).json({ error: msg });
+        } else if (msg.includes('No pending')) {
+          res.status(400).json({ error: msg });
         } else {
           res.status(500).json({ error: 'Internal server error' });
         }
@@ -204,6 +316,35 @@ export default function createBookingRoutes(db: Pool): Router {
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+
+  // GET /booking/calendar-data?campaign_id=&date= — консолидированные данные для календаря
+  router.get(
+    '/calendar-data',
+    authMiddleware(db),
+    campaignOwnerMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const { campaign_id, date } = req.query;
+        if (!campaign_id || typeof campaign_id !== 'string') {
+          return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'campaign_id query parameter required', 'campaign_id');
+        }
+        if (!isValidUUID(campaign_id)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid campaign_id format', 'campaign_id');
+        }
+        if (!date || typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'date must be in YYYY-MM-DD format', 'date');
+        }
+        const data = await api.getCalendarData(campaign_id, date);
+        res.json(data);
+      } catch (error) {
+        const msg = (error as Error).message;
+        if (msg === 'Campaign not found') {
+          return sendError(res, 404, ErrorCode.NOT_FOUND, 'Campaign not found', 'campaign_id');
+        }
+        Errors.internal(res);
+      }
+    }
+  );
 
   // POST /booking/slots — создать слот (только владелец поля)
   router.post(
@@ -263,8 +404,8 @@ export default function createBookingRoutes(db: Pool): Router {
         }
         res.json(slot);
       } catch (error) {
-        if ((error as Error).message.includes('pending booking')) {
-          res.status(409).json({ error: 'Cannot block slot with pending booking' });
+        if ((error as Error).message.includes('active booking')) {
+          res.status(409).json({ error: 'Cannot block slot with active booking' });
         } else {
           res.status(400).json({ error: (error as Error).message });
         }
@@ -291,6 +432,59 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   );
 
+  // ==================== STATS ====================
+
+  // GET /booking/stats?campaign_id= — агрегированная статистика площадки (только владелец campaign)
+  router.get(
+    '/stats',
+    authMiddleware(db),
+    campaignOwnerMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const { campaign_id } = req.query;
+        if (!campaign_id || typeof campaign_id !== 'string') {
+          return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'campaign_id query parameter required', 'campaign_id');
+        }
+        if (!isValidUUID(campaign_id)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid campaign_id format', 'campaign_id');
+        }
+        // Get timezone from campaign
+        const tzResult = await db.query(
+          'SELECT timezone_id FROM campaign_info WHERE id = $1',
+          [campaign_id]
+        );
+        const timezoneId = tzResult.rows[0]?.timezone_id || 'Europe/Moscow';
+
+        const stats = await api.getCampaignStats(campaign_id, timezoneId);
+        res.json(stats);
+      } catch (error) {
+        Errors.internal(res);
+      }
+    }
+  );
+
+  // GET /booking/pending-count?campaign_id= — количество pending бронирований (только владелец campaign)
+  router.get(
+    '/pending-count',
+    authMiddleware(db),
+    campaignOwnerMiddleware(db),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        const { campaign_id } = req.query;
+        if (!campaign_id || typeof campaign_id !== 'string') {
+          return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'campaign_id query parameter required', 'campaign_id');
+        }
+        if (!isValidUUID(campaign_id)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid campaign_id format', 'campaign_id');
+        }
+        const count = await api.getPendingCount(campaign_id);
+        res.json({ count });
+      } catch (error) {
+        Errors.internal(res);
+      }
+    }
+  );
+
   // ==================== BOOKINGS ====================
 
   // GET /booking/my — мои бронирования (авторизованный пользователь)
@@ -310,7 +504,7 @@ export default function createBookingRoutes(db: Pool): Router {
     campaignOwnerMiddleware(db),
     async (req: AuthRequest, res: Response) => {
       try {
-        const { campaign_id, page, limit } = req.query;
+        const { campaign_id, page, limit, status, field_id } = req.query;
         if (!campaign_id || typeof campaign_id !== 'string') {
           res.status(400).json({ error: 'campaign_id query parameter required' });
           return;
@@ -318,6 +512,8 @@ export default function createBookingRoutes(db: Pool): Router {
         const pagination = {
           page: page ? parseInt(page as string, 10) : undefined,
           limit: limit ? parseInt(limit as string, 10) : undefined,
+          status: status && typeof status === 'string' ? status : undefined,
+          field_id: field_id && typeof field_id === 'string' && isValidUUID(field_id) ? field_id : undefined,
         };
         const result = await api.getBookingsByCampaign(campaign_id, pagination);
         res.json(result);
@@ -327,8 +523,8 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   );
 
-  // POST /booking — создать бронь (авторизованный пользователь, не заблокированный)
-  router.post('/', authMiddleware(db), notBlockedMiddleware(db), async (req: AuthRequest, res: Response) => {
+  // POST /booking — создать бронь (авторизованный пользователь, не заблокированный, не превышен лимит)
+  router.post('/', createBookingLimiter, authMiddleware(db), userRoleMiddleware(db), notBlockedMiddleware(db), activeBookingLimitMiddleware(db, 10), async (req: AuthRequest, res: Response) => {
     try {
       const { slot_id, comment, contact_name, contact_phone } = req.body;
       if (!slot_id) {
@@ -349,6 +545,7 @@ export default function createBookingRoutes(db: Pool): Router {
   router.post(
     '/admin',
     authMiddleware(db),
+    campaignRoleMiddleware(db),
     async (req: AuthRequest, res: Response) => {
       try {
         const { slot_id, contact_name, contact_phone, comment } = req.body;
@@ -386,15 +583,7 @@ export default function createBookingRoutes(db: Pool): Router {
         const booking = await api.createAdminBooking(slot_id, contact_name, contact_phone, comment);
         res.status(201).json(booking);
       } catch (error) {
-        if ((error as Error).message === 'Slot already booked') {
-          res.status(409).json({ error: 'Slot already booked' });
-        } else if ((error as Error).message === 'Slot not found') {
-          res.status(404).json({ error: 'Slot not found' });
-        } else if ((error as Error).message === 'Slot is blocked') {
-          res.status(400).json({ error: 'Slot is blocked' });
-        } else {
-          res.status(400).json({ error: (error as Error).message });
-        }
+        handleError(res, error);
       }
     }
   );
@@ -414,6 +603,75 @@ export default function createBookingRoutes(db: Pool): Router {
       res.json(booking);
     } catch (error) {
       res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  // PUT /booking/bulk-status — массовое обновление статусов (для владельца campaign)
+  router.put('/bulk-status', authMiddleware(db), campaignRoleMiddleware(db), async (req: AuthRequest, res: Response) => {
+    try {
+      const { bookingIds, status, campaignId } = req.body;
+
+      if (!bookingIds || !Array.isArray(bookingIds) || bookingIds.length === 0) {
+        return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'bookingIds array is required', 'bookingIds');
+      }
+
+      if (bookingIds.length > 100) {
+        return sendError(res, 400, ErrorCode.VALIDATION_ERROR, 'Maximum 100 bookings per request', 'bookingIds');
+      }
+
+      if (!status) {
+        return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'status is required', 'status');
+      }
+
+      const validStatuses = ['confirmed', 'rejected'];
+      if (!validStatuses.includes(status)) {
+        return sendError(res, 400, ErrorCode.VALIDATION_ERROR, `Invalid status for bulk update. Must be one of: ${validStatuses.join(', ')}`, 'status');
+      }
+
+      if (!campaignId || !isValidUUID(campaignId)) {
+        return sendError(res, 400, ErrorCode.REQUIRED_FIELD, 'Valid campaignId is required', 'campaignId');
+      }
+
+      // Проверяем принадлежность пользователя к площадке
+      const userResult = await db.query<{ campaign_id: string | null }>(
+        'SELECT campaign_id FROM users WHERE id = $1',
+        [req.userId]
+      );
+      if (userResult.rows[0]?.campaign_id !== campaignId) {
+        return sendError(res, 403, ErrorCode.FORBIDDEN, 'Access denied');
+      }
+
+      // Проверяем UUID формат
+      for (const id of bookingIds) {
+        if (!isValidUUID(id)) {
+          return sendError(res, 400, ErrorCode.INVALID_FORMAT, `Invalid booking ID format: ${id}`, 'bookingIds');
+        }
+      }
+
+      // Проверяем что все брони принадлежат этой площадке
+      const ownershipCheck = await db.query(
+        `SELECT COUNT(*) as cnt FROM bookings b
+         JOIN booking_slots s ON b.slot_id = s.id
+         JOIN fields f ON s.field_id = f.id
+         WHERE b.id = ANY($1) AND f.campaign_id = $2`,
+        [bookingIds, campaignId]
+      );
+      if (parseInt(ownershipCheck.rows[0].cnt) !== bookingIds.length) {
+        return sendError(res, 403, ErrorCode.FORBIDDEN, 'Some bookings do not belong to your campaign');
+      }
+
+      const result = await api.bulkUpdateBookingStatus(bookingIds, status);
+
+      auditAPI.log({
+        eventType: status === 'confirmed' ? AUDIT_EVENTS.BOOKING_BULK_CONFIRMED : AUDIT_EVENTS.BOOKING_BULK_REJECTED,
+        actorId: req.userId!,
+        resourceType: 'booking',
+        metadata: { count: result.updated, bookingIds, campaignId },
+      }).catch(() => {});
+
+      res.json(result);
+    } catch (error) {
+      handleError(res, error);
     }
   });
 
@@ -483,6 +741,25 @@ export default function createBookingRoutes(db: Pool): Router {
     }
   );
 
+  // GET /booking/admin/:id — получить бронь по ID (только для ADMIN)
+  router.get('/admin/:id', adminMiddleware(db), async (req: AuthRequest, res: Response) => {
+    try {
+      const bookingId = req.params.id;
+      if (!isValidUUID(bookingId)) {
+        return sendError(res, 400, ErrorCode.INVALID_FORMAT, 'Invalid booking ID format', 'id');
+      }
+
+      const booking = await api.getBookingByIdAdmin(bookingId);
+      if (!booking) {
+        return sendError(res, 404, ErrorCode.NOT_FOUND, 'Booking not found', 'id');
+      }
+
+      res.json(booking);
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   // PUT /booking/admin/bulk-status — массовое обновление статусов (только для ADMIN)
   router.put('/admin/bulk-status', adminMiddleware(db), async (req: AuthRequest, res: Response) => {
     try {
@@ -513,6 +790,17 @@ export default function createBookingRoutes(db: Pool): Router {
       }
 
       const result = await api.bulkUpdateBookingStatus(bookingIds, status);
+      const eventMap: Record<string, string> = {
+        confirmed: AUDIT_EVENTS.BOOKING_BULK_CONFIRMED,
+        rejected: AUDIT_EVENTS.BOOKING_BULK_REJECTED,
+        cancelled_by_admin: AUDIT_EVENTS.BOOKING_BULK_CANCELLED,
+      };
+      auditAPI.log({
+        eventType: eventMap[status] || `booking.bulk_${status}`,
+        actorId: req.userId!,
+        resourceType: 'booking',
+        metadata: { count: result.updated, bookingIds },
+      }).catch(() => {});
       res.json(result);
     } catch (error) {
       handleError(res, error);

@@ -8,7 +8,7 @@ export enum CampaignStatus {
 export enum SocialLinkType {
   VK = 'VK',
   TELEGRAM = 'TELEGRAM',
-  WHATS_APP = 'WHATS_APP'
+  MAX = 'MAX'
 }
 
 export enum PaymentMethod {
@@ -17,41 +17,8 @@ export enum PaymentMethod {
   SBP = 'SBP'
 }
 
-export enum Facility {
-  PARKING = 'PARKING',
-  SHOWER = 'SHOWER',
-  LOCKER_ROOM = 'LOCKER_ROOM',
-  STORAGE = 'STORAGE',
-  WIFI = 'WIFI',
-  LIGHTING = 'LIGHTING',
-  STANDS = 'STANDS',
-  MUSIC = 'MUSIC',
-  AIR_CONDITIONING = 'AIR_CONDITIONING',
-  HEATING = 'HEATING',
-  CAFE = 'CAFE',
-  RENTAL = 'RENTAL',
-  TRAINERS = 'TRAINERS',
-  RESTROOM = 'RESTROOM',
-  VIDEO_SURVEILLANCE = 'VIDEO_SURVEILLANCE'
-}
-
-export enum Sport {
-  FOOTBALL = 'FOOTBALL',
-  MINI_FOOTBALL = 'MINI_FOOTBALL',
-  BASKETBALL = 'BASKETBALL',
-  VOLLEYBALL = 'VOLLEYBALL',
-  TENNIS = 'TENNIS',
-  TABLE_TENNIS = 'TABLE_TENNIS',
-  BADMINTON = 'BADMINTON',
-  SQUASH = 'SQUASH',
-  PADEL = 'PADEL',
-  HOCKEY = 'HOCKEY',
-  FITNESS = 'FITNESS',
-  YOGA = 'YOGA',
-  SWIMMING = 'SWIMMING',
-  MARTIAL_ARTS = 'MARTIAL_ARTS',
-  OTHER = 'OTHER'
-}
+// Sport types and Facilities are now managed as dynamic dictionaries in DB
+// (tables: sport_types, facilities) — see migration 028
 
 export interface Location {
   city: string;
@@ -109,11 +76,14 @@ export interface Campaign {
   working_timetable: WorkingTimetable | null;
   socials_links: SocialLink[] | null;
   payment_methods: PaymentMethod[] | null;
-  facilities: Facility[] | null;
+  facilities: string[] | null;
   media: Media | null;
   booking_info: string | null;
   timezone_id: string;
   status: CampaignStatus;
+  pending_changes: Record<string, unknown> | null;
+  moderation_comment: string | null;
+  moderation_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -129,14 +99,37 @@ export interface CampaignResponse {
   workingTimetable: WorkingTimetable | null;
   socialsLinks: SocialLink[] | null;
   paymentMethods: PaymentMethod[] | null;
-  facilities: Facility[] | null;
-  sports: Sport[] | null;
+  facilities: string[] | null;
+  sports: string[] | null;
   media: Media | null;
   bookingInfo: string | null;
   timezoneId: string;
   status: CampaignStatus;
+  pendingChanges: Record<string, unknown> | null;
+  moderationComment: string | null;
+  moderationAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AdminCampaignResponse extends CampaignResponse {
+  ownerName: string | null;
+  ownerEmail: string | null;
+  ownerId: string | null;
+  fieldsCount: number;
+  bookingsCount: number;
+}
+
+export interface ReadinessItem {
+  key: string;
+  label: string;
+  done: boolean;
+}
+
+export interface ReadinessResponse {
+  ready: boolean;
+  items: ReadinessItem[];
+  missingCount: number;
 }
 
 export interface CreateCampaignRequest {
@@ -148,7 +141,7 @@ export interface CreateCampaignRequest {
   workingTimetable: WorkingTimetable;
   socialsLinks?: SocialLink[];
   paymentMethods?: PaymentMethod[];
-  facilities?: Facility[];
+  facilities?: string[];
   media?: Media;
   bookingInfo?: string;
   timezoneId?: string;
@@ -163,7 +156,7 @@ export interface UpdateCampaignRequest {
   workingTimetable?: WorkingTimetable;
   socialsLinks?: SocialLink[];
   paymentMethods?: PaymentMethod[];
-  facilities?: Facility[];
+  facilities?: string[];
   media?: Media;
   bookingInfo?: string;
   timezoneId?: string;

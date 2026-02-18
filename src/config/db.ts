@@ -10,7 +10,10 @@ function getPoolConfig(): PoolConfig {
 
   return {
     connectionString: databaseUrl,
-    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined
+    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+    max: 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000,
   };
 }
 

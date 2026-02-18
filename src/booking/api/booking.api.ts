@@ -11,10 +11,16 @@ import {
   BookingDetails,
   FieldDaySchedule,
   FieldWorkingTimetable,
-  DayOfWeek
+  DayOfWeek,
+  CalendarData,
+  CampaignStats,
+  RevenueByDay,
+  HeatmapCell,
 } from '../model/booking.model';
 import { toJsonbValue } from '../../utils/pg';
 import { normalizePhone } from '../../utils/phone';
+import { findOrCreateGuestUserInTransaction } from '../../utils/guest-user';
+import { S3API } from '../../s3/api/s3.api';
 
 // Типы для классификации изменений
 type FieldChangeType = 'COSMETIC' | 'BREAK_CHANGE' | 'SCHEDULE_CHANGE';
@@ -44,6 +50,8 @@ export class ScheduleConflictError extends Error {
 export interface PaginationParams {
   page?: number;
   limit?: number;
+  status?: string;
+  field_id?: string;
 }
 
 export interface PaginatedResult<T> {
@@ -52,6 +60,7 @@ export interface PaginatedResult<T> {
     page: number;
     limit: number;
     total: number;
+    totalAll: number;
     totalPages: number;
   };
 }
@@ -67,6 +76,8 @@ interface WorkingTimetable {
 }
 
 export class BookingAPI {
+  private readonly s3API = new S3API();
+
   constructor(private db: Pool) {}
 
   // ==================== TRANSACTION HELPER ====================
@@ -418,19 +429,21 @@ export class BookingAPI {
       this.validateFieldWorkingHours(data.working_hours_from, data.working_hours_to, campaignTimetable);
     }
 
+    // Фото идут в pending_photos (премодерация), photos остаётся пустым
     const result = await this.db.query<Field>(
       `INSERT INTO fields (
-        campaign_id, name, sport_types, is_indoor, photos, price_per_hour,
+        campaign_id, name, sport_types, is_indoor, photos, pending_photos, price_per_hour,
         slot_duration, working_hours_from, working_hours_to, working_days, working_timetable, client_info
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING *`,
       [
         data.campaign_id,
         data.name,
         data.sport_types,
         data.is_indoor,
-        data.photos,
+        '{}',                                // photos = пусто до модерации
+        data.photos,                         // pending_photos = загруженные фото
         data.price_per_hour,
         data.slot_duration ?? 60,
         data.working_hours_from ?? null,
@@ -466,10 +479,12 @@ export class BookingAPI {
               COALESCE(b.contact_name, u.name) as user_name, b.contact_name
        FROM bookings b
        JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        LEFT JOIN users u ON b.user_id = u.id
        WHERE s.field_id = $1
          AND b.status IN ('pending', 'confirmed')
-         AND s.date >= CURRENT_DATE
+         AND s.date >= (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
        ORDER BY s.date, s.start_time`,
       [fieldId]
     );
@@ -557,10 +572,12 @@ export class BookingAPI {
               b.contact_phone, u.phone as user_phone
        FROM bookings b
        JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        LEFT JOIN users u ON b.user_id = u.id
        WHERE s.field_id = $1
          AND b.status IN ('pending', 'confirmed')
-         AND s.date >= CURRENT_DATE
+         AND s.date >= (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
        ORDER BY s.date, s.start_time`,
       [fieldId]
     );
@@ -586,10 +603,12 @@ export class BookingAPI {
     const result = await this.db.query<{ id: string; date: Date; start_time: string; end_time: string }>(
       `SELECT s.id, s.date, s.start_time, s.end_time
        FROM booking_slots s
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
        LEFT JOIN bookings b ON s.id = b.slot_id
          AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
        WHERE s.field_id = $1
-         AND s.date >= CURRENT_DATE
+         AND s.date >= (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
          AND b.id IS NULL
          AND s.is_blocked = false`,
       [fieldId]
@@ -756,7 +775,7 @@ export class BookingAPI {
     if (data.name !== undefined) { sets.push(`name = $${idx++}`); values.push(data.name); }
     if (data.sport_types !== undefined) { sets.push(`sport_types = $${idx++}`); values.push(data.sport_types); }
     if (data.is_indoor !== undefined) { sets.push(`is_indoor = $${idx++}`); values.push(data.is_indoor); }
-    if (data.photos !== undefined) { sets.push(`photos = $${idx++}`); values.push(data.photos); }
+    if (data.photos !== undefined) { sets.push(`pending_photos = $${idx++}`); values.push(data.photos); }
     if (data.price_per_hour !== undefined) { sets.push(`price_per_hour = $${idx++}`); values.push(data.price_per_hour); }
     if (data.status !== undefined) { sets.push(`status = $${idx++}`); values.push(data.status); }
     if (data.slot_duration !== undefined) { sets.push(`slot_duration = $${idx++}`); values.push(data.slot_duration); }
@@ -887,6 +906,29 @@ export class BookingAPI {
       throw new Error('Cannot delete field with active bookings');
     }
 
+    // Защита последнего поля для published/pending площадок
+    const fieldInfo = await this.db.query<{ campaign_id: string }>(
+      'SELECT campaign_id FROM fields WHERE id = $1 AND deleted_at IS NULL',
+      [fieldId]
+    );
+    if (fieldInfo.rowCount === 0) return false;
+
+    const campaignId = fieldInfo.rows[0].campaign_id;
+    const campaignStatus = await this.db.query<{ status: string }>(
+      'SELECT status FROM campaign_info WHERE id = $1',
+      [campaignId]
+    );
+
+    if (campaignStatus.rows[0]?.status === 'published' || campaignStatus.rows[0]?.status === 'pending') {
+      const fieldCount = await this.db.query<{ count: string }>(
+        'SELECT COUNT(*)::text as count FROM fields WHERE campaign_id = $1 AND deleted_at IS NULL',
+        [campaignId]
+      );
+      if (parseInt(fieldCount.rows[0]?.count || '0', 10) <= 1) {
+        throw new Error('Cannot delete the last field of a published campaign');
+      }
+    }
+
     // Soft delete: set deleted_at instead of physical deletion
     // This preserves booking history for reporting
     const result = await this.db.query(
@@ -894,6 +936,102 @@ export class BookingAPI {
       [fieldId]
     );
     return (result.rowCount ?? 0) > 0;
+  }
+
+  // ==================== FIELD PHOTOS MODERATION ====================
+
+  /**
+   * Парсит bucket и key из S3 URL (proxy или direct)
+   */
+  private extractBucketKeyFromUrl(url: string): { bucket: string; key: string } | null {
+    try {
+      const parsed = new URL(url);
+      const path = decodeURIComponent(parsed.pathname || '');
+      const proxyMarker = '/s3/public/';
+      const proxyIndex = path.indexOf(proxyMarker);
+      if (proxyIndex >= 0) {
+        const rest = path.slice(proxyIndex + proxyMarker.length);
+        const slashIndex = rest.indexOf('/');
+        if (slashIndex > 0 && slashIndex < rest.length - 1) {
+          return { bucket: rest.slice(0, slashIndex), key: rest.slice(slashIndex + 1) };
+        }
+      }
+      const directParts = path.split('/').filter(Boolean);
+      if (directParts.length >= 2) {
+        return { bucket: directParts[0], key: directParts.slice(1).join('/') };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Удаляет S3 objects из beforePhotos, которых нет в afterPhotos
+   */
+  private async deletePhotoDiff(beforePhotos: string[], afterPhotos: string[]): Promise<void> {
+    const afterSet = new Set(afterPhotos);
+    const toDelete = beforePhotos
+      .filter((url) => !afterSet.has(url))
+      .map((url) => this.extractBucketKeyFromUrl(url))
+      .filter((item): item is { bucket: string; key: string } => item !== null && item.key.startsWith('images/'));
+
+    // Группируем по bucket
+    const byBucket = new Map<string, string[]>();
+    for (const { bucket, key } of toDelete) {
+      if (!byBucket.has(bucket)) byBucket.set(bucket, []);
+      byBucket.get(bucket)!.push(key);
+    }
+
+    for (const [bucket, keys] of byBucket) {
+      try {
+        await this.s3API.deleteObjects({ bucket, keys });
+      } catch (error) {
+        console.error(`Failed to cleanup field photos in bucket ${bucket}:`, error);
+      }
+    }
+  }
+
+  async approveFieldPhotos(fieldId: string): Promise<Field> {
+    const field = await this.getFieldById(fieldId);
+    if (!field) throw new Error('Field not found');
+    if (!field.pending_photos || field.pending_photos.length === 0) {
+      throw new Error('No pending photos to approve');
+    }
+
+    const oldPhotos = field.photos || [];
+    const newPhotos = field.pending_photos;
+
+    const result = await this.db.query<Field>(
+      'UPDATE fields SET photos = pending_photos, pending_photos = NULL WHERE id = $1 RETURNING *',
+      [fieldId]
+    );
+
+    // Cleanup: удалить старые фото, которых нет в новых
+    await this.deletePhotoDiff(oldPhotos, newPhotos);
+
+    return result.rows[0];
+  }
+
+  async rejectFieldPhotos(fieldId: string): Promise<Field> {
+    const field = await this.getFieldById(fieldId);
+    if (!field) throw new Error('Field not found');
+    if (!field.pending_photos || field.pending_photos.length === 0) {
+      throw new Error('No pending photos to reject');
+    }
+
+    const pendingPhotos = field.pending_photos;
+    const currentPhotos = field.photos || [];
+
+    const result = await this.db.query<Field>(
+      'UPDATE fields SET pending_photos = NULL WHERE id = $1 RETURNING *',
+      [fieldId]
+    );
+
+    // Cleanup: удалить pending фото, которых нет в текущих
+    await this.deletePhotoDiff(pendingPhotos, currentPhotos);
+
+    return result.rows[0];
   }
 
   // ==================== SLOTS ====================
@@ -926,10 +1064,15 @@ export class BookingAPI {
     const existingSlots = await this.db.query(
       `SELECT s.*, b.id as booking_id, b.user_id as booking_user_id, b.status as booking_status,
               COALESCE(b.contact_name, u.name) as user_name,
-              COALESCE(b.contact_phone, u.phone) as user_phone
+              COALESCE(b.contact_phone, u.phone) as user_phone,
+              (u.email IS NOT NULL AND u.password_hash IS NOT NULL) as is_registered
        FROM booking_slots s
-       LEFT JOIN bookings b ON s.id = b.slot_id
-         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+       LEFT JOIN LATERAL (
+         SELECT * FROM bookings
+         WHERE slot_id = s.id
+           AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         ORDER BY created_at DESC LIMIT 1
+       ) b ON true
        LEFT JOIN users u ON b.user_id = u.id
        WHERE s.field_id = $1 AND s.date = $2
        ORDER BY s.start_time`,
@@ -965,6 +1108,24 @@ export class BookingAPI {
         : [];
     }
 
+    // Удаляем незабронированные слоты, не совпадающие с текущей сеткой
+    // (защита от overlap при смене slot_duration или расписания)
+    const newStartTimes = slots.map(s => s.start_time);
+    if (newStartTimes.length > 0) {
+      const stPlaceholders = newStartTimes.map((_, i) => `$${i + 3}`).join(', ');
+      await this.db.query(
+        `DELETE FROM booking_slots
+         WHERE field_id = $1 AND date = $2
+         AND start_time NOT IN (${stPlaceholders})
+         AND NOT EXISTS (
+           SELECT 1 FROM bookings b
+           WHERE b.slot_id = booking_slots.id
+           AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         )`,
+        [fieldId, date, ...newStartTimes]
+      );
+    }
+
     // INSERT missing slots (ON CONFLICT DO NOTHING — не трогаем существующие)
     const placeholders: string[] = [];
     const values: (string | boolean | null)[] = [];
@@ -988,10 +1149,15 @@ export class BookingAPI {
     const allSlots = await this.db.query(
       `SELECT s.*, b.id as booking_id, b.user_id as booking_user_id, b.status as booking_status,
               COALESCE(b.contact_name, u.name) as user_name,
-              COALESCE(b.contact_phone, u.phone) as user_phone
+              COALESCE(b.contact_phone, u.phone) as user_phone,
+              (u.email IS NOT NULL AND u.password_hash IS NOT NULL) as is_registered
        FROM booking_slots s
-       LEFT JOIN bookings b ON s.id = b.slot_id
-         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+       LEFT JOIN LATERAL (
+         SELECT * FROM bookings
+         WHERE slot_id = s.id
+           AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         ORDER BY created_at DESC LIMIT 1
+       ) b ON true
        LEFT JOIN users u ON b.user_id = u.id
        WHERE s.field_id = $1 AND s.date = $2
        ORDER BY s.start_time`,
@@ -1075,6 +1241,7 @@ export class BookingAPI {
         status: row.booking_status,
         user_name: row.user_name || null,
         user_phone: row.user_phone || null,
+        is_registered: row.is_registered === true,
       } : null
     }));
   }
@@ -1110,14 +1277,14 @@ export class BookingAPI {
   }
 
   async blockSlot(slotId: string, reason?: string): Promise<BookingSlot | null> {
-    // Проверяем нет ли pending брони
-    const pendingBooking = await this.db.query(
-      `SELECT id FROM bookings WHERE slot_id = $1 AND status = 'pending'`,
+    // Проверяем нет ли активной брони (pending или confirmed)
+    const activeBooking = await this.db.query(
+      `SELECT id FROM bookings WHERE slot_id = $1 AND status IN ('pending', 'confirmed')`,
       [slotId]
     );
 
-    if (pendingBooking.rows.length > 0) {
-      throw new Error('Cannot block slot with pending booking');
+    if (activeBooking.rows.length > 0) {
+      throw new Error('Cannot block slot with active booking');
     }
 
     const result = await this.db.query<BookingSlot>(
@@ -1135,6 +1302,56 @@ export class BookingAPI {
       [slotId]
     );
     return result.rows[0] || null;
+  }
+
+  // ==================== CALENDAR DATA ====================
+
+  /**
+   * Консолидированный запрос для календаря.
+   * Возвращает fields + slots + timezone + stats за один вызов.
+   */
+  async getCalendarData(campaignId: string, date: string): Promise<CalendarData> {
+    // 1. Получить timezone кампании
+    const campaignResult = await this.db.query<{ timezone_id: string }>(
+      'SELECT timezone_id FROM campaign_info WHERE id = $1',
+      [campaignId]
+    );
+    if (campaignResult.rows.length === 0) {
+      throw new Error('Campaign not found');
+    }
+    const timezone = campaignResult.rows[0].timezone_id || 'Europe/Moscow';
+
+    // 2. Получить активные поля
+    const fields = await this.getFieldsByCampaign(campaignId);
+    const activeFields = fields.filter(f => f.status === 'active');
+
+    // 3. Параллельно загрузить слоты для всех полей (переиспользуем существующую логику)
+    const slotsEntries = await Promise.all(
+      activeFields.map(async (field) => {
+        const fieldSlots = await this.getSlotsByFieldAndDate(field.id, date);
+        return [field.id, fieldSlots] as [string, SlotWithBooking[]];
+      })
+    );
+    const slots: Record<string, SlotWithBooking[]> = Object.fromEntries(slotsEntries);
+
+    // 4. Считаем stats из загруженных слотов
+    let pending = 0, confirmed = 0, completed = 0;
+    for (const fieldSlots of Object.values(slots)) {
+      for (const slot of fieldSlots) {
+        if (slot.booking) {
+          if (slot.booking.status === 'pending') pending++;
+          else if (slot.booking.status === 'confirmed') confirmed++;
+          else if (slot.booking.status === 'completed') completed++;
+        }
+      }
+    }
+
+    return {
+      fields: activeFields,
+      slots,
+      timezone,
+      stats: { pending, confirmed, completed },
+    };
   }
 
   // ==================== BOOKINGS ====================
@@ -1228,19 +1445,56 @@ export class BookingAPI {
     await this.runAutoStatusUpdates();
 
     const page = pagination?.page || 1;
-    const limit = pagination?.limit || 50;
+    const limit = Math.min(Math.max(pagination?.limit || 50, 1), 100);
     const offset = (page - 1) * limit;
 
-    // Get total count
-    const countResult = await this.db.query(
-      `SELECT COUNT(*) as total
-       FROM bookings b
-       JOIN booking_slots s ON b.slot_id = s.id
-       JOIN fields f ON s.field_id = f.id
-       WHERE f.campaign_id = $1`,
-      [campaignId]
-    );
+    // Build dynamic WHERE clause for filters
+    const conditions = ['f.campaign_id = $1'];
+    const params: any[] = [campaignId];
+    let paramIdx = 2;
+
+    if (pagination?.status) {
+      // Support comma-separated statuses (e.g. "pending,confirmed")
+      const statuses = pagination.status.split(',').filter(Boolean);
+      if (statuses.length === 1) {
+        conditions.push(`b.status = $${paramIdx}`);
+        params.push(statuses[0]);
+        paramIdx++;
+      } else if (statuses.length > 1) {
+        conditions.push(`b.status = ANY($${paramIdx})`);
+        params.push(statuses);
+        paramIdx++;
+      }
+    }
+
+    if (pagination?.field_id) {
+      conditions.push(`f.id = $${paramIdx}`);
+      params.push(pagination.field_id);
+      paramIdx++;
+    }
+
+    const whereClause = conditions.join(' AND ');
+
+    const hasFilters = pagination?.status || pagination?.field_id;
+
+    // Get filtered count + unfiltered total in parallel
+    const countQueries = [
+      this.db.query(
+        `SELECT COUNT(*) as total FROM bookings b JOIN booking_slots s ON b.slot_id = s.id JOIN fields f ON s.field_id = f.id WHERE ${whereClause}`,
+        params
+      ),
+    ];
+    if (hasFilters) {
+      countQueries.push(
+        this.db.query(
+          `SELECT COUNT(*) as total FROM bookings b JOIN booking_slots s ON b.slot_id = s.id JOIN fields f ON s.field_id = f.id WHERE f.campaign_id = $1`,
+          [campaignId]
+        )
+      );
+    }
+    const [countResult, totalAllResult] = await Promise.all(countQueries);
     const total = parseInt(countResult.rows[0].total, 10);
+    const totalAll = totalAllResult ? parseInt(totalAllResult.rows[0].total, 10) : total;
 
     const result = await this.db.query(
       `SELECT
@@ -1257,10 +1511,10 @@ export class BookingAPI {
        JOIN booking_slots s ON b.slot_id = s.id
        JOIN fields f ON s.field_id = f.id
        LEFT JOIN users u ON b.user_id = u.id
-       WHERE f.campaign_id = $1
+       WHERE ${whereClause}
        ORDER BY s.date DESC, s.start_time DESC
-       LIMIT $2 OFFSET $3`,
-      [campaignId, limit, offset]
+       LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+      [...params, limit, offset]
     );
 
     return {
@@ -1269,6 +1523,7 @@ export class BookingAPI {
         page,
         limit,
         total,
+        totalAll,
         totalPages: Math.ceil(total / limit),
       },
     };
@@ -1315,6 +1570,7 @@ export class BookingAPI {
         working_days: row.working_days || [],
         working_timetable: row.working_timetable || null,
         client_info: row.client_info,
+        pending_photos: row.pending_photos || null,
         created_at: row.field_created_at || row.created_at,
         deleted_at: row.field_deleted_at || null
       }
@@ -1328,62 +1584,92 @@ export class BookingAPI {
     contactName?: string,
     contactPhone?: string
   ): Promise<Booking> {
-    // Проверяем что слот существует, не заблокирован и свободен
-    // Также получаем данные поля для денормализации
-    const slotQuery = await this.db.query(
-      `SELECT s.id, s.is_blocked, f.name as field_name, f.price_per_hour, f.sport_types
-       FROM booking_slots s
-       JOIN fields f ON s.field_id = f.id
-       WHERE s.id = $1`,
-      [slotId]
-    );
-
-    if (slotQuery.rows.length === 0) {
-      throw new Error('Slot not found');
-    }
-
-    const slot = slotQuery.rows[0];
-
-    if (slot.is_blocked) {
-      throw new Error('Slot is blocked');
-    }
-
-    const existing = await this.db.query(
-      `SELECT id FROM bookings WHERE slot_id = $1
-       AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
-      [slotId]
-    );
-
-    if (existing.rows.length > 0) {
-      throw new Error('Slot already booked');
-    }
-
-    // Нормализуем телефон для единообразия (для будущей связки по телефону)
+    // Нормализуем телефон до транзакции (чистая функция)
     const normalizedPhone = normalizePhone(contactPhone);
-
-    // Для гостевых бронирований (без user_id) требуем контактный телефон
     if (!userId && !normalizedPhone) {
       throw new Error('Contact phone is required for guest bookings');
     }
 
-    // Денормализуем данные поля для статистики
-    const fieldName = slot.field_name;
-    const fieldPrice = slot.price_per_hour;
-    const sportType = slot.sport_types?.[0] || null;
+    return this.withTransaction(async (client) => {
+      // Проверяем что слот существует, не заблокирован и свободен
+      const slotQuery = await client.query(
+        `SELECT s.id, s.field_id, s.date, s.start_time, s.end_time, s.is_blocked,
+                f.name as field_name, f.price_per_hour, f.sport_types,
+                c.status as campaign_status, c.timezone_id,
+                (s.date < (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+                 OR (s.date = (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+                     AND s.start_time <= (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::time)
+                ) as slot_in_past
+         FROM booking_slots s
+         JOIN fields f ON s.field_id = f.id AND f.deleted_at IS NULL
+         JOIN campaign_info c ON f.campaign_id = c.id
+         WHERE s.id = $1`,
+        [slotId]
+      );
 
-    const result = await this.db.query<Booking>(
-      `INSERT INTO bookings (slot_id, user_id, status, comment, contact_name, contact_phone, field_name, field_price, sport_type)
-       VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [slotId, userId, comment ?? null, contactName ?? null, normalizedPhone, fieldName, fieldPrice, sportType]
-    );
-    return result.rows[0];
+      if (slotQuery.rows.length === 0) {
+        throw new Error('Slot not found');
+      }
+
+      const slot = slotQuery.rows[0];
+
+      if (slot.is_blocked) {
+        throw new Error('Slot is blocked');
+      }
+
+      if (slot.campaign_status !== 'published') {
+        throw new Error('Campaign is not available');
+      }
+
+      if (slot.slot_in_past) {
+        throw new Error('Cannot book past slots');
+      }
+
+      const existing = await client.query(
+        `SELECT id FROM bookings WHERE slot_id = $1
+         AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
+        [slotId]
+      );
+
+      if (existing.rows.length > 0) {
+        throw new Error('Slot already booked');
+      }
+
+      // Проверяем overlap — нет ли активной брони на том же поле в пересекающееся время
+      const overlap = await client.query(
+        `SELECT b.id FROM bookings b
+         JOIN booking_slots s ON b.slot_id = s.id
+         WHERE s.field_id = $1 AND s.date = $2
+         AND s.start_time < $3 AND s.end_time > $4
+         AND b.slot_id != $5
+         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         LIMIT 1`,
+        [slot.field_id, slot.date, slot.end_time, slot.start_time, slotId]
+      );
+
+      if (overlap.rows.length > 0) {
+        throw new Error('Time slot overlaps with existing booking');
+      }
+
+      // Денормализуем данные поля для статистики
+      const fieldName = slot.field_name;
+      const fieldPrice = slot.price_per_hour;
+      const sportType = slot.sport_types?.[0] || null;
+
+      const result = await client.query<Booking>(
+        `INSERT INTO bookings (slot_id, user_id, status, comment, contact_name, contact_phone, field_name, field_price, sport_type)
+         VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8)
+         RETURNING *`,
+        [slotId, userId, comment ?? null, contactName ?? null, normalizedPhone, fieldName, fieldPrice, sportType]
+      );
+      return result.rows[0];
+    });
   }
 
   /**
    * Создание брони администратором (владельцем площадки)
    * Бронь создаётся сразу со статусом confirmed
-   * user_id = NULL (клиент не в системе)
+   * Создаёт бронь от имени админа. Для гостей создаётся guest user по телефону.
    */
   async createAdminBooking(
     slotId: string,
@@ -1391,53 +1677,89 @@ export class BookingAPI {
     contactPhone: string,
     comment?: string
   ): Promise<Booking> {
-    // Проверяем что слот существует, не заблокирован и свободен
-    const slotQuery = await this.db.query(
-      `SELECT s.id, s.is_blocked, f.name as field_name, f.price_per_hour, f.sport_types
-       FROM booking_slots s
-       JOIN fields f ON s.field_id = f.id
-       WHERE s.id = $1`,
-      [slotId]
-    );
-
-    if (slotQuery.rows.length === 0) {
-      throw new Error('Slot not found');
-    }
-
-    const slot = slotQuery.rows[0];
-
-    if (slot.is_blocked) {
-      throw new Error('Slot is blocked');
-    }
-
-    const existing = await this.db.query(
-      `SELECT id FROM bookings WHERE slot_id = $1
-       AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
-      [slotId]
-    );
-
-    if (existing.rows.length > 0) {
-      throw new Error('Slot already booked');
-    }
-
-    // Нормализуем телефон
+    // Нормализуем телефон до транзакции (чистая функция)
     const normalizedPhone = normalizePhone(contactPhone);
     if (!normalizedPhone) {
       throw new Error('Contact phone is required');
     }
 
-    // Денормализуем данные поля
-    const fieldName = slot.field_name;
-    const fieldPrice = slot.price_per_hour;
-    const sportType = slot.sport_types?.[0] || null;
+    return this.withTransaction(async (client) => {
+      // Проверяем что слот существует, не заблокирован и свободен
+      const slotQuery = await client.query(
+        `SELECT s.id, s.field_id, s.date, s.start_time, s.end_time, s.is_blocked,
+                f.name as field_name, f.price_per_hour, f.sport_types,
+                c.status as campaign_status, c.timezone_id,
+                (s.date < (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+                 OR (s.date = (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::date
+                     AND s.start_time <= (CURRENT_TIMESTAMP AT TIME ZONE c.timezone_id)::time)
+                ) as slot_in_past
+         FROM booking_slots s
+         JOIN fields f ON s.field_id = f.id AND f.deleted_at IS NULL
+         JOIN campaign_info c ON f.campaign_id = c.id
+         WHERE s.id = $1`,
+        [slotId]
+      );
 
-    const result = await this.db.query<Booking>(
-      `INSERT INTO bookings (slot_id, user_id, status, comment, contact_name, contact_phone, field_name, field_price, sport_type)
-       VALUES ($1, NULL, 'confirmed', $2, $3, $4, $5, $6, $7)
-       RETURNING *`,
-      [slotId, comment ?? null, contactName ?? null, normalizedPhone, fieldName, fieldPrice, sportType]
-    );
-    return result.rows[0];
+      if (slotQuery.rows.length === 0) {
+        throw new Error('Slot not found');
+      }
+
+      const slot = slotQuery.rows[0];
+
+      if (slot.is_blocked) {
+        throw new Error('Slot is blocked');
+      }
+
+      if (slot.campaign_status !== 'published') {
+        throw new Error('Campaign is not available');
+      }
+
+      if (slot.slot_in_past) {
+        throw new Error('Cannot book past slots');
+      }
+
+      const existing = await client.query(
+        `SELECT id FROM bookings WHERE slot_id = $1
+         AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
+        [slotId]
+      );
+
+      if (existing.rows.length > 0) {
+        throw new Error('Slot already booked');
+      }
+
+      // Проверяем overlap — нет ли активной брони на том же поле в пересекающееся время
+      const overlap = await client.query(
+        `SELECT b.id FROM bookings b
+         JOIN booking_slots s ON b.slot_id = s.id
+         WHERE s.field_id = $1 AND s.date = $2
+         AND s.start_time < $3 AND s.end_time > $4
+         AND b.slot_id != $5
+         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         LIMIT 1`,
+        [slot.field_id, slot.date, slot.end_time, slot.start_time, slotId]
+      );
+
+      if (overlap.rows.length > 0) {
+        throw new Error('Time slot overlaps with existing booking');
+      }
+
+      // Денормализуем данные поля
+      const fieldName = slot.field_name;
+      const fieldPrice = slot.price_per_hour;
+      const sportType = slot.sport_types?.[0] || null;
+
+      // Найти или создать guest user по телефону
+      const userId = await findOrCreateGuestUserInTransaction(client, contactPhone);
+
+      const result = await client.query<Booking>(
+        `INSERT INTO bookings (slot_id, user_id, status, comment, contact_name, contact_phone, field_name, field_price, sport_type)
+         VALUES ($1, $2, 'confirmed', $3, $4, $5, $6, $7, $8)
+         RETURNING *`,
+        [slotId, userId, comment ?? null, contactName ?? null, normalizedPhone, fieldName, fieldPrice, sportType]
+      );
+      return result.rows[0];
+    });
   }
 
   /**
@@ -1541,23 +1863,30 @@ export class BookingAPI {
     bookingIds: string[],
     newStatus: BookingStatus
   ): Promise<{ updated: number; failed: string[] }> {
-    const updated: string[] = [];
-    const failed: string[] = [];
+    return this.withTransaction(async (client) => {
+      const updated: string[] = [];
+      const failed: string[] = [];
 
-    for (const bookingId of bookingIds) {
-      try {
-        const result = await this.updateBookingStatus(bookingId, newStatus);
-        if (result) {
-          updated.push(bookingId);
-        } else {
+      for (const bookingId of bookingIds) {
+        try {
+          const result = await client.query(
+            `UPDATE bookings SET status = $1 WHERE id = $2
+             AND status NOT IN ('completed', 'no_show', 'cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin')
+             RETURNING id`,
+            [newStatus, bookingId]
+          );
+          if (result.rowCount && result.rowCount > 0) {
+            updated.push(bookingId);
+          } else {
+            failed.push(bookingId);
+          }
+        } catch {
           failed.push(bookingId);
         }
-      } catch {
-        failed.push(bookingId);
       }
-    }
 
-    return { updated: updated.length, failed };
+      return { updated: updated.length, failed };
+    });
   }
 
   async cancelBooking(bookingId: string, userId: string): Promise<boolean> {
@@ -1684,6 +2013,8 @@ export class BookingAPI {
       slot_id: string;
       slot_date: string;
       start_time: string;
+      end_time: string;
+      field_id: string;
       is_blocked: boolean;
       block_reason: string | null;
       field_name: string;
@@ -1691,11 +2022,12 @@ export class BookingAPI {
       sport_types: string[];
       new_campaign_id: string;
     }>(
-      `SELECT s.id as slot_id, s.date as slot_date, s.start_time, s.is_blocked, s.block_reason,
+      `SELECT s.id as slot_id, s.field_id, s.date as slot_date, s.start_time, s.end_time,
+              s.is_blocked, s.block_reason,
               f.name as field_name, f.price_per_hour as field_price, f.sport_types,
               f.campaign_id as new_campaign_id
        FROM booking_slots s
-       JOIN fields f ON s.field_id = f.id
+       JOIN fields f ON s.field_id = f.id AND f.deleted_at IS NULL
        WHERE s.id = $1`,
       [newSlotId]
     );
@@ -1732,22 +2064,40 @@ export class BookingAPI {
       throw new Error('Cannot reschedule to past slot');
     }
 
-    // 8. Проверяем что новый слот свободен (нет активной брони)
-    const existingBooking = await this.db.query(
-      `SELECT id FROM bookings
-       WHERE slot_id = $1
-       AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')`,
-      [newSlotId]
-    );
-
-    if (existingBooking.rows.length > 0) {
-      throw new Error('New slot is already booked');
-    }
-
-    // 9. Транзакция: запись истории + обновление брони
+    // 8. Транзакция: проверка + запись истории + обновление брони
     const client = await this.db.connect();
     try {
       await client.query('BEGIN');
+
+      // Проверяем что новый слот свободен (нет активной брони) С БЛОКИРОВКОЙ СТРОКИ
+      const existingBooking = await client.query(
+        `SELECT id FROM bookings
+         WHERE slot_id = $1
+         AND status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         FOR UPDATE`,
+        [newSlotId]
+      );
+
+      if (existingBooking.rows.length > 0) {
+        throw new Error('New slot is already booked');
+      }
+
+      // Проверяем overlap — нет ли активной брони на том же поле в пересекающееся время
+      const overlap = await client.query(
+        `SELECT b.id FROM bookings b
+         JOIN booking_slots s ON b.slot_id = s.id
+         WHERE s.field_id = $1 AND s.date = $2
+         AND s.start_time < $3 AND s.end_time > $4
+         AND b.slot_id != $5
+         AND b.id != $6
+         AND b.status NOT IN ('cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'rejected', 'expired')
+         LIMIT 1`,
+        [newSlot.field_id, newSlot.slot_date, newSlot.end_time, newSlot.start_time, newSlotId, bookingId]
+      );
+
+      if (overlap.rows.length > 0) {
+        throw new Error('Time slot overlaps with existing booking');
+      }
 
       // Запись в историю
       await client.query(
@@ -1857,7 +2207,7 @@ export class BookingAPI {
     await this.runAutoStatusUpdates();
 
     const page = pagination?.page || 1;
-    const limit = pagination?.limit || 50;
+    const limit = Math.min(Math.max(pagination?.limit || 50, 1), 100);
     const offset = (page - 1) * limit;
 
     // Get total count
@@ -1895,6 +2245,7 @@ export class BookingAPI {
         page,
         limit,
         total,
+        totalAll: total,
         totalPages: Math.ceil(total / limit),
       },
     };
@@ -1941,10 +2292,327 @@ export class BookingAPI {
         working_days: row.working_days || [],
         working_timetable: row.working_timetable || null,
         client_info: row.client_info,
+        pending_photos: row.pending_photos || null,
         created_at: row.field_created_at || row.created_at,
         deleted_at: row.field_deleted_at || null
       },
       campaign_name: row.campaign_name || null,
     }));
+  }
+
+  // ==================== ADMIN BOOKING BY ID ====================
+
+  async getBookingByIdAdmin(bookingId: string): Promise<BookingDetails | null> {
+    const result = await this.db.query(
+      `SELECT
+         b.id as booking_id, b.slot_id, b.user_id, b.status as booking_status, b.comment as booking_comment,
+         b.contact_name, b.contact_phone, b.created_at as booking_created_at,
+         s.field_id, s.date, s.start_time, s.end_time, s.is_blocked, s.block_reason, s.created_at as slot_created_at,
+         f.id as field_id, f.campaign_id, f.name, f.sport_types, f.is_indoor, f.photos,
+         f.price_per_hour, f.status as field_status, f.slot_duration, f.working_hours_from,
+         f.working_hours_to, f.working_days, f.working_timetable, f.client_info, f.created_at as field_created_at,
+         c.name as campaign_name,
+         c.timezone_id as campaign_timezone_id,
+         COALESCE(b.contact_name, u.name) as user_name,
+         COALESCE(b.contact_phone, u.phone) as user_phone,
+         u.email as user_email
+       FROM bookings b
+       JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       JOIN campaign_info c ON f.campaign_id = c.id
+       LEFT JOIN users u ON b.user_id = u.id
+       WHERE b.id = $1`,
+      [bookingId]
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    return this.mapBookingDetailsWithCampaign(result.rows)[0];
+  }
+
+  // ==================== CAMPAIGN STATS ====================
+
+  private static readonly DAYS_ORDER: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+  private static readonly ACTIVE_STATUSES = `('confirmed','completed','pending')`;
+  private static readonly REVENUE_STATUSES = `('confirmed','completed')`;
+
+  private calcTrend(current: number, previous: number): number {
+    if (previous === 0 && current > 0) return 100;
+    if (previous === 0 && current === 0) return 0;
+    return Math.round(((current - previous) / previous) * 100);
+  }
+
+  private parseTime(timeStr: string): number {
+    const [h, m] = timeStr.split(':').map(Number);
+    return h * 60 + m;
+  }
+
+  private getSlotsPerDay(field: Field, dayOfWeek: DayOfWeek): number {
+    const timetable = field.working_timetable;
+    if (!timetable) return 0;
+    const daySchedule = timetable[dayOfWeek];
+    if (!daySchedule) return 0;
+    const fromMinutes = this.parseTime(daySchedule.from);
+    const toMinutes = this.parseTime(daySchedule.to);
+    let availableMinutes = toMinutes - fromMinutes;
+    if (daySchedule.breaks) {
+      for (const brk of daySchedule.breaks) {
+        availableMinutes -= (this.parseTime(brk.to) - this.parseTime(brk.from));
+      }
+    }
+    const duration = field.slot_duration || 60;
+    return Math.floor(availableMinutes / duration);
+  }
+
+  private getWorkingHoursRange(fields: Field[]): { minHour: number; maxHour: number } {
+    let minHour = 23;
+    let maxHour = 0;
+    for (const field of fields) {
+      if (field.status !== 'active' || !field.working_timetable) continue;
+      for (const day of BookingAPI.DAYS_ORDER) {
+        const schedule = field.working_timetable[day];
+        if (!schedule) continue;
+        const fromH = parseInt(schedule.from.split(':')[0], 10);
+        const toH = parseInt(schedule.to.split(':')[0], 10);
+        if (fromH < minHour) minHour = fromH;
+        if (toH > maxHour) maxHour = toH;
+      }
+    }
+    return { minHour: minHour === 23 ? 8 : minHour, maxHour: maxHour === 0 ? 22 : maxHour };
+  }
+
+  async getPendingCount(campaignId: string): Promise<number> {
+    const result = await this.db.query(
+      `SELECT COUNT(*)::int as count
+       FROM bookings b
+       JOIN booking_slots s ON b.slot_id = s.id
+       JOIN fields f ON s.field_id = f.id
+       WHERE f.campaign_id = $1
+         AND b.status = 'pending'
+         AND s.date >= CURRENT_DATE
+         AND f.deleted_at IS NULL`,
+      [campaignId]
+    );
+    return result.rows[0]?.count || 0;
+  }
+
+  async getCampaignStats(campaignId: string, timezoneId: string): Promise<CampaignStats> {
+    // 1. Compute date ranges in campaign timezone
+    const datesResult = await this.db.query(`
+      SELECT
+        (NOW() AT TIME ZONE $1)::date AS today,
+        (NOW() AT TIME ZONE $1)::date - 1 AS yesterday,
+        (NOW() AT TIME ZONE $1)::date - 28 AS current_start,
+        (NOW() AT TIME ZONE $1)::date - 56 AS prev_start,
+        (NOW() AT TIME ZONE $1)::date - 29 AS prev_end,
+        ((NOW() AT TIME ZONE $1)::date - 1) - 29 AS revenue_start,
+        date_trunc('week', (NOW() AT TIME ZONE $1)::date)::date AS week_start
+    `, [timezoneId]);
+
+    const d = datesResult.rows[0];
+    const today = d.today as string;
+    const yesterday = d.yesterday as string;
+    const currentStart = d.current_start as string;
+    const prevStart = d.prev_start as string;
+    const prevEnd = d.prev_end as string;
+    const revenueStart = d.revenue_start as string;
+    const weekStart = d.week_start as string;
+
+    // 2. Run all queries in parallel
+    const [monthlyResult, newClientsResult, revenueByDayResult, heatmapResult, occupancyResult, fields] = await Promise.all([
+      // Monthly stats (revenue, bookings, unique clients)
+      this.db.query(`
+        SELECT
+          COALESCE(SUM(CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed') THEN f.price_per_hour ELSE 0 END), 0)::numeric AS current_revenue,
+          COALESCE(SUM(CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed') THEN f.price_per_hour ELSE 0 END), 0)::numeric AS prev_revenue,
+          COUNT(CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed','pending') THEN 1 END)::int AS current_bookings,
+          COUNT(CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed','pending') THEN 1 END)::int AS prev_bookings,
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed','pending') AND u.email IS NOT NULL AND u.password_hash IS NOT NULL THEN b.user_id END)::int AS current_platform_clients,
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed','pending') AND u.email IS NOT NULL AND u.password_hash IS NOT NULL THEN b.user_id END)::int AS prev_platform_clients,
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $2 AND $3 AND b.status IN ('confirmed','completed','pending') AND (u.email IS NULL OR u.password_hash IS NULL) THEN b.user_id END)::int AS current_manual_clients,
+          COUNT(DISTINCT CASE WHEN s.date BETWEEN $4 AND $5 AND b.status IN ('confirmed','completed','pending') AND (u.email IS NULL OR u.password_hash IS NULL) THEN b.user_id END)::int AS prev_manual_clients
+        FROM bookings b
+        JOIN booking_slots s ON b.slot_id = s.id
+        JOIN fields f ON s.field_id = f.id
+        LEFT JOIN users u ON b.user_id = u.id
+        WHERE f.campaign_id = $1 AND f.deleted_at IS NULL
+          AND s.date BETWEEN $4 AND $3
+      `, [campaignId, currentStart, yesterday, prevStart, prevEnd]),
+
+      // New clients (first booking per user_id)
+      this.db.query(`
+        WITH first_bookings AS (
+          SELECT b.user_id, MIN(s.date) AS first_date
+          FROM bookings b
+          JOIN booking_slots s ON b.slot_id = s.id
+          JOIN fields f ON s.field_id = f.id
+          WHERE f.campaign_id = $1 AND b.user_id IS NOT NULL AND f.deleted_at IS NULL
+          GROUP BY b.user_id
+        )
+        SELECT
+          COUNT(*) FILTER (WHERE first_date BETWEEN $2 AND $3)::int AS new_current,
+          COUNT(*) FILTER (WHERE first_date BETWEEN $4 AND $5)::int AS new_prev
+        FROM first_bookings
+      `, [campaignId, currentStart, yesterday, prevStart, prevEnd]),
+
+      // Revenue by day (30 days)
+      this.db.query(`
+        SELECT s.date::text,
+          COALESCE(SUM(CASE WHEN u.email IS NOT NULL AND u.password_hash IS NOT NULL THEN f.price_per_hour ELSE 0 END), 0)::numeric AS platform,
+          COALESCE(SUM(CASE WHEN u.email IS NULL OR u.password_hash IS NULL THEN f.price_per_hour ELSE 0 END), 0)::numeric AS manual,
+          COUNT(*)::int AS bookings_count
+        FROM bookings b
+        JOIN booking_slots s ON b.slot_id = s.id
+        JOIN fields f ON s.field_id = f.id
+        LEFT JOIN users u ON b.user_id = u.id
+        WHERE f.campaign_id = $1 AND s.date BETWEEN $2 AND $3
+          AND b.status IN ('confirmed','completed') AND f.deleted_at IS NULL
+        GROUP BY s.date ORDER BY s.date
+      `, [campaignId, revenueStart, yesterday]),
+
+      // Heatmap (28 days, confirmed/completed)
+      this.db.query(`
+        SELECT
+          (EXTRACT(ISODOW FROM s.date::date)::int - 1) AS dow,
+          EXTRACT(HOUR FROM s.start_time::time)::int AS hour,
+          COUNT(*)::int AS count
+        FROM bookings b
+        JOIN booking_slots s ON b.slot_id = s.id
+        JOIN fields f ON s.field_id = f.id
+        WHERE f.campaign_id = $1 AND s.date BETWEEN $2 AND $3
+          AND b.status IN ('confirmed','completed') AND f.deleted_at IS NULL
+        GROUP BY dow, hour
+      `, [campaignId, currentStart, yesterday]),
+
+      // Occupancy (booked slots this week)
+      this.db.query(`
+        SELECT COUNT(*)::int AS booked_slots
+        FROM bookings b
+        JOIN booking_slots s ON b.slot_id = s.id
+        JOIN fields f ON s.field_id = f.id
+        WHERE f.campaign_id = $1 AND s.date BETWEEN $2 AND $3
+          AND b.status IN ('confirmed','completed','pending') AND f.deleted_at IS NULL
+      `, [campaignId, weekStart, yesterday]),
+
+      // Fields for occupancy totalSlots and working hours
+      this.getFieldsByCampaign(campaignId),
+    ]);
+
+    // 3. Process monthly stats
+    const m = monthlyResult.rows[0];
+    const currentRevenue = Number(m.current_revenue);
+    const prevRevenue = Number(m.prev_revenue);
+    const currentBookings = m.current_bookings;
+    const prevBookings = m.prev_bookings;
+    const currentPlatformClients = m.current_platform_clients;
+    const prevPlatformClients = m.prev_platform_clients;
+    const currentManualClients = m.current_manual_clients;
+    const prevManualClients = m.prev_manual_clients;
+    const currentTotalClients = currentPlatformClients + currentManualClients;
+    const prevTotalClients = prevPlatformClients + prevManualClients;
+
+    const nc = newClientsResult.rows[0];
+    const newClientsCurrent = nc.new_current;
+    const newClientsPrev = nc.new_prev;
+
+    // 4. Process revenue by day (fill gaps for empty days)
+    const revenueMap = new Map<string, { platform: number; manual: number; bookingsCount: number }>();
+    for (const row of revenueByDayResult.rows) {
+      revenueMap.set(row.date, {
+        platform: Number(row.platform),
+        manual: Number(row.manual),
+        bookingsCount: row.bookings_count,
+      });
+    }
+    const revenueByDay: RevenueByDay[] = [];
+    const revStartDate = new Date(revenueStart);
+    const yesterdayDate = new Date(yesterday);
+    for (let d = new Date(revStartDate); d <= yesterdayDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().slice(0, 10);
+      const data = revenueMap.get(dateStr);
+      revenueByDay.push({
+        date: dateStr,
+        platform: data?.platform ?? 0,
+        manual: data?.manual ?? 0,
+        bookingsCount: data?.bookingsCount ?? 0,
+      });
+    }
+
+    // 5. Process heatmap
+    const activeFields = fields.filter(f => f.status === 'active');
+    const { minHour, maxHour } = this.getWorkingHoursRange(activeFields);
+
+    const heatmapMap = new Map<string, number>();
+    let heatmapMax = 0;
+    for (const row of heatmapResult.rows) {
+      const key = `${row.dow}:${row.hour}`;
+      heatmapMap.set(key, row.count);
+      if (row.count > heatmapMax) heatmapMax = row.count;
+    }
+
+    const heatmapData: HeatmapCell[] = [];
+    for (let dow = 0; dow < 7; dow++) {
+      for (let hour = minHour; hour < maxHour; hour++) {
+        const count = heatmapMap.get(`${dow}:${hour}`) || 0;
+        heatmapData.push({
+          dayOfWeek: dow,
+          hour,
+          count,
+          intensity: heatmapMax > 0 ? count / heatmapMax : 0,
+        });
+      }
+    }
+
+    // 6. Process occupancy
+    const bookedSlots = occupancyResult.rows[0].booked_slots;
+    let totalSlots = 0;
+    const weekStartDate = new Date(weekStart);
+    const todayDate = new Date(today);
+    for (let d = new Date(weekStartDate); d < todayDate; d.setDate(d.getDate() + 1)) {
+      const dow = (d.getDay() === 0 ? 6 : d.getDay() - 1); // 0=Mon
+      for (const field of activeFields) {
+        totalSlots += this.getSlotsPerDay(field, BookingAPI.DAYS_ORDER[dow]);
+      }
+    }
+
+    // Compute weekEnd for display (min of yesterday, weekStart + 6)
+    const weekEndDate = new Date(weekStart);
+    weekEndDate.setDate(weekEndDate.getDate() + 6);
+    const weekEnd = yesterdayDate < weekEndDate ? yesterday : weekEndDate.toISOString().slice(0, 10);
+
+    return {
+      monthly: {
+        revenue: currentRevenue,
+        revenueTrend: this.calcTrend(currentRevenue, prevRevenue),
+        bookingsCount: currentBookings,
+        bookingsTrend: this.calcTrend(currentBookings, prevBookings),
+        uniqueClients: {
+          platform: currentPlatformClients,
+          manual: currentManualClients,
+          total: currentTotalClients,
+        },
+        uniqueClientsTrend: this.calcTrend(currentTotalClients, prevTotalClients),
+        newClients: newClientsCurrent,
+        newClientsTrend: this.calcTrend(newClientsCurrent, newClientsPrev),
+      },
+      revenueByDay,
+      weekOccupancy: {
+        percent: totalSlots > 0 ? Math.round((bookedSlots / totalSlots) * 100) : 0,
+        bookedSlots,
+        totalSlots,
+      },
+      heatmapData,
+      heatmapMinHour: minHour,
+      heatmapMaxHour: maxHour,
+      dateRanges: {
+        currentStart,
+        yesterday,
+        revenueStart,
+        weekStart,
+        weekEnd,
+      },
+    };
   }
 }

@@ -17,6 +17,8 @@ export interface AuthRequest {
   phone?: string;
   role?: USER_ROLE;
   date_of_birth?: string;
+  consent_personal_data?: boolean;
+  consent_terms?: boolean;
 }
 
 export interface SignInRequest {
@@ -26,6 +28,7 @@ export interface SignInRequest {
 
 export interface SignInResponse {
   id: string;
+  role: USER_ROLE;
   email_verified: EMAIL_STATUS;
 }
 
@@ -43,6 +46,9 @@ export interface UserProfile {
   campaign_id?: string;
   campaign_timezone_id?: string;  // IANA timezone ID (e.g., 'Europe/Moscow')
   campaign_name?: string;
+  campaign_status?: string;
+  campaign_moderation_comment?: string;
+  invited_by?: string;  // NULL = оригинальный (может приглашать), иначе — приглашённый
   created_at: string;
   updated_at: string;
 }

@@ -45,9 +45,9 @@ export const adminMiddleware = (db: Pool) => {
         return res.status(401).json({ error: 'Unauthorized - Invalid token' });
       }
 
-      // Проверяем что пользователь существует и является ADMIN
-      const result = await db.query<{ id: string; role: string }>(
-        'SELECT id, role FROM users WHERE id = $1',
+      // Проверяем что пользователь существует, является ADMIN и не заблокирован
+      const result = await db.query<{ id: string; role: string; is_blocked: boolean }>(
+        'SELECT id, role, is_blocked FROM users WHERE id = $1',
         [userId]
       );
 
@@ -56,6 +56,9 @@ export const adminMiddleware = (db: Pool) => {
       }
 
       const user = result.rows[0];
+      if (user.is_blocked) {
+        return res.status(403).json({ error: 'Forbidden - Account is blocked' });
+      }
       if (user.role !== USER_ROLE.ADMIN) {
         return res.status(403).json({ error: 'Forbidden - Admin access required' });
       }
