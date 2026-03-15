@@ -130,6 +130,14 @@ export class AuthAPI {
         );
       }
 
+      if (credentials.consent_marketing) {
+        await client.query(
+          `insert into user_consents (user_id, consent_type, accepted, ip_address, user_agent)
+           values ($1, 'MARKETING', true, $2, $3)`,
+          [userId, ipAddress ?? null, userAgent ?? null]
+        );
+      }
+
       // Отправляем письмо подтверждения регистрации (локально, без Supabase)
       const confirmToken = createEmailConfirmToken(userId);
       await sendEmailConfirmation(email, confirmToken);

@@ -40,7 +40,7 @@ export function createRegistrationLinkRoutes(db: Pool): Router {
    */
   router.post('/registration-link/accept', async (req: AuthRequest, res: Response) => {
     try {
-      const { token, name, email, phone, password, consent_personal_data } = req.body;
+      const { token, name, email, phone, password, consent_personal_data, consent_terms, consent_marketing } = req.body;
 
       if (!token || !name || !email || !password) {
         return res.status(400).json({ error: 'Token, name, email and password are required' });
@@ -58,6 +58,8 @@ export function createRegistrationLinkRoutes(db: Pool): Router {
         phone,
         password,
         consent_personal_data,
+        consent_terms,
+        consent_marketing,
         req.ip,
         req.headers['user-agent']
       );

@@ -19,6 +19,7 @@ export interface AuthRequest {
   date_of_birth?: string;
   consent_personal_data?: boolean;
   consent_terms?: boolean;
+  consent_marketing?: boolean;
 }
 
 export interface SignInRequest {

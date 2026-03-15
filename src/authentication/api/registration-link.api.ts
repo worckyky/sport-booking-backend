@@ -90,6 +90,8 @@ export class RegistrationLinkAPI {
     phone: string,
     password: string,
     consentPersonalData?: boolean,
+    consentTerms?: boolean,
+    consentMarketing?: boolean,
     ipAddress?: string,
     userAgent?: string
   ): Promise<{ id: string; accessToken: string; role: USER_ROLE; campaignId: string }> {
@@ -166,11 +168,27 @@ export class RegistrationLinkAPI {
         [userId, campaignId]
       );
 
-      // 6. Согласие на обработку ПД
+      // 6. Согласия
       if (consentPersonalData) {
         await client.query(
           `INSERT INTO user_consents (user_id, consent_type, accepted, ip_address, user_agent)
            VALUES ($1, 'PERSONAL_DATA', true, $2, $3)`,
+          [userId, ipAddress ?? null, userAgent ?? null]
+        );
+      }
+
+      if (consentTerms) {
+        await client.query(
+          `INSERT INTO user_consents (user_id, consent_type, accepted, ip_address, user_agent)
+           VALUES ($1, 'TERMS', true, $2, $3)`,
+          [userId, ipAddress ?? null, userAgent ?? null]
+        );
+      }
+
+      if (consentMarketing) {
+        await client.query(
+          `INSERT INTO user_consents (user_id, consent_type, accepted, ip_address, user_agent)
+           VALUES ($1, 'MARKETING', true, $2, $3)`,
           [userId, ipAddress ?? null, userAgent ?? null]
         );
       }

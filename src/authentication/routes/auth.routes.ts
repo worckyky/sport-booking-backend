@@ -164,7 +164,7 @@ export class AuthRoutes {
 
     this.router.post('/signup', async (req: Request<{}, any, AuthRequest>, res: Response) => {
       try {
-        const { email, password, role, name, phone, date_of_birth, consent_personal_data, consent_terms } = req.body;
+        const { email, password, role, name, phone, date_of_birth, consent_personal_data, consent_terms, consent_marketing } = req.body;
 
         if (!email || !password) {
           return res.status(400).json({ error: 'Email and password are required' });
@@ -183,7 +183,7 @@ export class AuthRoutes {
         const userAgent = req.headers['user-agent'];
 
         const data = await this.authAPI.signUp(
-          { email, password, role, name, phone, date_of_birth, consent_personal_data, consent_terms },
+          { email, password, role, name, phone, date_of_birth, consent_personal_data, consent_terms, consent_marketing },
           ipAddress,
           userAgent
         );
@@ -301,6 +301,80 @@ export class AuthRoutes {
         } else {
           res.status(500).json({ error: 'Internal server error' });
         }
+      }
+    });
+
+    // ── Consent endpoints ──
+
+    this.router.get('/consents', authMiddleware(this.db), async (req: AuthReq, res: Response) => {
+      try {
+        const userId = req.userId;
+        if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+        const result = await this.db.query(
+          `SELECT DISTINCT ON (consent_type) consent_type, accepted, created_at
+           FROM user_consents
+           WHERE user_id = $1
+           ORDER BY consent_type, created_at DESC`,
+          [userId]
+        );
+
+        const consents: Record<string, { accepted: boolean; updated_at: string }> = {};
+        for (const row of result.rows) {
+          consents[row.consent_type] = {
+            accepted: row.accepted,
+            updated_at: row.created_at,
+          };
+        }
+
+        res.json(consents);
+      } catch (error) {
+        res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+      }
+    });
+
+    this.router.put('/consents/marketing', authMiddleware(this.db), async (req: AuthReq, res: Response) => {
+      try {
+        const userId = req.userId;
+        if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+        const { accepted } = req.body;
+        if (typeof accepted !== 'boolean') {
+          return res.status(400).json({ error: 'accepted must be a boolean' });
+        }
+
+        const ipAddress = req.ip || req.socket.remoteAddress;
+        const userAgent = req.headers['user-agent'];
+
+        await this.db.query(
+          `INSERT INTO user_consents (user_id, consent_type, accepted, ip_address, user_agent)
+           VALUES ($1, 'MARKETING', $2, $3, $4)`,
+          [userId, accepted, ipAddress ?? null, userAgent ?? null]
+        );
+
+        res.json({ consent_type: 'MARKETING', accepted });
+      } catch (error) {
+        res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+      }
+    });
+
+    // Admin: get user consents
+    this.router.get('/admin/users/:id/consents', adminMiddleware(this.db), async (req: AuthReq, res: Response) => {
+      try {
+        const userId = req.params.id;
+        if (!userId) return res.status(400).json({ error: 'User ID is required' });
+
+        const result = await this.db.query(
+          `SELECT id, consent_type, accepted, ip_address, user_agent, created_at
+           FROM user_consents
+           WHERE user_id = $1
+           ORDER BY created_at DESC`,
+          [userId]
+        );
+
+        res.json(result.rows);
+      } catch (error) {
+        res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
       }
     });
 
