@@ -3,7 +3,7 @@ import type { Pool } from 'pg';
 import { RegistrationLinkAPI } from '../api/registration-link.api';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.middleware';
 import { adminMiddleware } from '../middleware/admin.middleware';
-import { AUTH_COOKIE_NAME, AUTH_TOKEN_TTL_SECONDS } from '../../config/auth';
+import { AUTH_COOKIE_NAME, getAuthCookieOptions } from '../../config/auth';
 import { AuditAPI, AUDIT_EVENTS } from '../../audit/audit.api';
 import { validatePassword } from '../../utils/validators';
 
@@ -65,13 +65,7 @@ export function createRegistrationLinkRoutes(db: Pool): Router {
       );
 
       // Устанавливаем auth cookie
-      res.cookie(AUTH_COOKIE_NAME, result.accessToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: AUTH_TOKEN_TTL_SECONDS * 1000,
-        path: '/'
-      });
+      res.cookie(AUTH_COOKIE_NAME, result.accessToken, getAuthCookieOptions());
 
       res.json({
         id: result.id,

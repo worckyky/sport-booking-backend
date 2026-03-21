@@ -7,6 +7,7 @@ import { campaignRoleMiddleware } from '../middleware/campaign.middleware';
 import { CampaignStatus, CreateCampaignRequest, UpdateCampaignRequest } from '../model/campaign.model';
 import { AuditAPI, AUDIT_EVENTS } from '../../audit/audit.api';
 import { validatePaymentMethods, validateFacilities, validateWorkingTimetable, validateTimezoneId } from '../../utils/validators';
+import { notifyCampaignModeration } from '../../utils/campaignNotifications';
 
 export default function createCampaignRoutes(db: Pool): Router {
   const router = Router();
@@ -588,6 +589,10 @@ router.put(
           resourceId: campaignId,
           changes: comment ? { comment: { to: comment } } : undefined,
         }).catch(() => {});
+      }
+      // Notify campaign owner about moderation result
+      if (status === 'published' || (status === 'draft' && comment)) {
+        notifyCampaignModeration(db, campaignId, status, comment).catch(() => {});
       }
       res.json(campaign);
     } catch (error) {

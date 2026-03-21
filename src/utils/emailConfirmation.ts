@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { getJwtSecret } from '../config/auth';
 import { sendMail } from './mailer';
+import { baseLayout, emailHeading, emailText, emailButton, emailNote } from './email-templates';
 
 function getConfirmBaseUrl(): string {
   const base =
@@ -23,20 +24,19 @@ export function createEmailConfirmToken(userId: string): string {
 
 export async function sendEmailConfirmation(email: string, token: string): Promise<void> {
   const baseUrl = getConfirmBaseUrl();
-  // Link must lead to frontend; frontend should call backend /auth/confirm with the token
   const confirmUrl = `${baseUrl}/confirm?access_token=${encodeURIComponent(token)}`;
+
+  const html = baseLayout([
+    emailHeading('Подтверждение регистрации'),
+    emailText('Здравствуйте!<br><br>Для завершения регистрации на Walk&Play подтвердите ваш email.'),
+    emailButton('Подтвердить email', confirmUrl),
+    emailNote('Ссылка действительна 24 часа. Если вы не регистрировались — просто проигнорируйте это письмо.'),
+  ].join(''));
 
   await sendMail({
     to: email,
     subject: 'Подтверждение регистрации',
     text: `Подтвердите регистрацию по ссылке: ${confirmUrl}`,
-    html: `
-      <div>
-        <p>Подтвердите регистрацию:</p>
-        <p><a href="${confirmUrl}">Подтвердить email</a></p>
-        <p>Если вы не регистрировались — просто игнорируйте это письмо.</p>
-      </div>
-    `
+    html,
   });
 }
-

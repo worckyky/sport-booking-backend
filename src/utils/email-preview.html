@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Walk&Play — Email Templates Preview</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #e8eaed;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: #1a1a1a;
+      padding: 0;
+    }
+
+    .preview-header {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 32px 24px;
+      text-align: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    }
+
+    .preview-header h1 {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    .preview-header p {
+      font-size: 13px;
+      color: #9ca3af;
+      margin-top: 6px;
+    }
+
+    .preview-nav {
+      background: #fff;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 12px 24px;
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      position: sticky;
+      top: 88px;
+      z-index: 99;
+    }
+
+    .preview-nav a {
+      flex-shrink: 0;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+      text-decoration: none;
+      color: #6b7280;
+      background: #f3f4f6;
+      transition: all 0.2s;
+      border: 1px solid transparent;
+    }
+
+    .preview-nav a:hover {
+      background: #2563eb;
+      color: #fff;
+    }
+
+    .preview-nav a.auth { border-color: #d1d5db; }
+    .preview-nav a.booking { border-color: #bfdbfe; color: #2563eb; }
+    .preview-nav a.moderation { border-color: #fde68a; color: #92400e; }
+
+    .emails-container {
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 32px 24px 64px;
+    }
+
+    .email-label {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      margin-top: 40px;
+    }
+
+    .email-label:first-child { margin-top: 0; }
+
+    .email-label .number {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: #2563eb;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .email-label .meta {
+      flex: 1;
+    }
+
+    .email-label .title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #1a1a1a;
+    }
+
+    .email-label .tag {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-top: 2px;
+    }
+
+    .email-label .tag.auth { background: #f3f4f6; color: #6b7280; }
+    .email-label .tag.booking { background: #dbeafe; color: #1d4ed8; }
+    .email-label .tag.moderation { background: #fef3c7; color: #92400e; }
+
+    .email-wrapper {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08), 0 4px 16px rgba(0,0,0,0.04);
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+
+    .email-chrome {
+      background: #f9fafb;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .email-chrome .dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .email-chrome .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    .email-chrome .dot:nth-child(1) { background: #ef4444; }
+    .email-chrome .dot:nth-child(2) { background: #f59e0b; }
+    .email-chrome .dot:nth-child(3) { background: #22c55e; }
+
+    .email-chrome .subject {
+      flex: 1;
+      font-size: 12px;
+      color: #6b7280;
+      margin-left: 8px;
+    }
+
+    .email-chrome .subject strong {
+      color: #1a1a1a;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+
+<div class="preview-header">
+  <h1>Walk&Play — Email Templates</h1>
+  <p>8 шаблонов писем &middot; Превью для визуальной проверки</p>
+</div>
+
+<div class="preview-nav">
+  <a href="#email-1" class="auth">1. Регистрация</a>
+  <a href="#email-2" class="auth">2. Пароль</a>
+  <a href="#email-3" class="auth">3. Приглашение</a>
+  <a href="#email-4" class="booking">4. Подтверждено</a>
+  <a href="#email-5" class="booking">5. Отклонено</a>
+  <a href="#email-6" class="booking">6. Отменено</a>
+  <a href="#email-7" class="moderation">7. Одобрена</a>
+  <a href="#email-8" class="moderation">8. Отклонена</a>
+</div>
+
+<div class="emails-container">
+
+  <!-- ============ EMAIL 1: Подтверждение регистрации ============ -->
+  <div class="email-label" id="email-1">
+    <div class="number">1</div>
+    <div class="meta">
+      <div class="title">Подтверждение регистрации</div>
+      <span class="tag auth">Auth</span>
+    </div>
+  </div>
+  <div class="email-wrapper">
+    <div class="email-chrome">
+      <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      <div class="subject">Тема: <strong>Подтверждение регистрации</strong></div>
+    </div>
+    <!-- EMAIL BODY START (inline CSS only) -->
+    <div style="background-color: #f5f5f5; padding: 0; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 520px; margin: 0 auto;">
+        <tr>
+          <td style="text-align: center; padding: 32px 24px 16px;">
+            <span style="font-size: 24px; font-weight: 700; color: #2563eb; letter-spacing: -0.5px;">Walk&Play</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 0 16px 24px;">
+            <div style="background: #ffffff; border-radius: 12px; padding: 32px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+              <h2 style="font-size: 20px; font-weight: 700; color: #1a1a1a; margin: 0 0 16px; line-height: 1.3;">Подтверждение регистрации</h2>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 24px;">Здравствуйте!<br><br>Для завершения регистрации на Walk&Play подтвердите ваш email.</p>
+              <div style="text-align: center; margin: 0 0 24px;">
+                <a href="#" style="display: inline-block; padding: 12px 32px; background-color: #2563eb; color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 8px; line-height: 1.4;">Подтвердить email</a>
+              </div>
+              <p style="font-size: 13px; color: #9ca3af; line-height: 1.5; margin: 0;">Ссылка действительна 24 часа. Если вы не регистрировались — просто проигнорируйте это письмо.</p>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="text-align: center; padding: 8px 24px 32px;">
+            <p style="font-size: 12px; color: #9ca3af; margin: 0 0 4px;">Walk&Play — площадки для спорта и отдыха</p>
+            <p style="font-size: 11px; color: #c0c0c0; margin: 0;">Это автоматическое письмо, не отвечайте на него</p>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <!-- EMAIL BODY END -->
+  </div>
+
+  <!-- ============ EMAIL 2: Восстановление пароля ============ -->
+  <div class="email-label" id="email-2">
+    <div class="number">2</div>
+    <div class="meta">
+      <div class="title">Восстановление пароля</div>
+      <span class="tag auth">Auth</span>
+    </div>
+  </div>
+  <div class="email-wrapper">
+    <div class="email-chrome">
+      <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      <div class="subject">Тема: <strong>Восстановление пароля</strong></div>
+    </div>
+    <div style="background-color: #f5f5f5; padding: 0; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 520px; margin: 0 auto;">
+        <tr>
+          <td style="text-align: center; padding: 32px 24px 16px;">
+            <span style="font-size: 24px; font-weight: 700; color: #2563eb; letter-spacing: -0.5px;">Walk&Play</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 0 16px 24px;">
+            <div style="background: #ffffff; border-radius: 12px; padding: 32px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+              <h2 style="font-size: 20px; font-weight: 700; color: #1a1a1a; margin: 0 0 16px; line-height: 1.3;">Восстановление пароля</h2>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 24px;">Здравствуйте!<br><br>Вы запросили восстановление пароля на Walk&Play.</p>
+              <div style="text-align: center; margin: 0 0 24px;">
+                <a href="#" style="display: inline-block; padding: 12px 32px; background-color: #2563eb; color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 8px; line-height: 1.4;">Восстановить пароль</a>
+              </div>
+              <p style="font-size: 13px; color: #9ca3af; line-height: 1.5; margin: 0;">Ссылка действительна 1 час. Если вы не запрашивали восстановление — просто проигнорируйте это письмо.</p>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="text-align: center; padding: 8px 24px 32px;">
+            <p style="font-size: 12px; color: #9ca3af; margin: 0 0 4px;">Walk&Play — площадки для спорта и отдыха</p>
+            <p style="font-size: 11px; color: #c0c0c0; margin: 0;">Это автоматическое письмо, не отвечайте на него</p>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ EMAIL 3: Приглашение в команду ============ -->
+  <div class="email-label" id="email-3">
+    <div class="number">3</div>
+    <div class="meta">
+      <div class="title">Приглашение в команду</div>
+      <span class="tag auth">Auth</span>
+    </div>
+  </div>
+  <div class="email-wrapper">
+    <div class="email-chrome">
+      <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      <div class="subject">Тема: <strong>Приглашение в команду «Спортивный комплекс Олимп»</strong></div>
+    </div>
+    <div style="background-color: #f5f5f5; padding: 0; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 520px; margin: 0 auto;">
+        <tr>
+          <td style="text-align: center; padding: 32px 24px 16px;">
+            <span style="font-size: 24px; font-weight: 700; color: #2563eb; letter-spacing: -0.5px;">Walk&Play</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 0 16px 24px;">
+            <div style="background: #ffffff; border-radius: 12px; padding: 32px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+              <h2 style="font-size: 20px; font-weight: 700; color: #1a1a1a; margin: 0 0 16px; line-height: 1.3;">Приглашение в команду</h2>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 24px;">Алексей Петров приглашает вас в команду «Спортивный комплекс Олимп».</p>
+              <div style="text-align: center; margin: 0 0 24px;">
+                <a href="#" style="display: inline-block; padding: 12px 32px; background-color: #2563eb; color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 8px; line-height: 1.4;">Принять приглашение</a>
+              </div>
+              <p style="font-size: 13px; color: #9ca3af; line-height: 1.5; margin: 0;">Ссылка действительна 7 дней. Если вы не ожидали это приглашение — просто проигнорируйте письмо.</p>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="text-align: center; padding: 8px 24px 32px;">
+            <p style="font-size: 12px; color: #9ca3af; margin: 0 0 4px;">Walk&Play — площадки для спорта и отдыха</p>
+            <p style="font-size: 11px; color: #c0c0c0; margin: 0;">Это автоматическое письмо, не отвечайте на него</p>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ EMAIL 4: Бронирование подтверждено ============ -->
+  <div class="email-label" id="email-4">
+    <div class="number">4</div>
+    <div class="meta">
+      <div class="title">Бронирование подтверждено</div>
+      <span class="tag booking">Booking · NTF-02</span>
+    </div>
+  </div>
+  <div class="email-wrapper">
+    <div class="email-chrome">
+      <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      <div class="subject">Тема: <strong>Бронирование подтверждено</strong></div>
+    </div>
+    <div style="background-color: #f5f5f5; padding: 0; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 520px; margin: 0 auto;">
+        <tr>
+          <td style="text-align: center; padding: 32px 24px 16px;">
+            <span style="font-size: 24px; font-weight: 700; color: #2563eb; letter-spacing: -0.5px;">Walk&Play</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 0 16px 24px;">
+            <div style="background: #ffffff; border-radius: 12px; padding: 32px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+              <h2 style="font-size: 20px; font-weight: 700; color: #1a1a1a; margin: 0 0 16px; line-height: 1.3;">Бронирование подтверждено</h2>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 20px;">Здравствуйте, Иван!<br><br>Ваше бронирование на площадке «Спортивный комплекс Олимп» подтверждено.</p>
+              <div style="background: #f8fafc; border-left: 3px solid #2563eb; border-radius: 8px; padding: 16px 20px; margin: 0 0 24px;">
+                <table cellpadding="0" cellspacing="0" width="100%">
+                  <tr>
+                    <td style="font-size: 13px; color: #6b7280; padding: 4px 0; width: 100px; vertical-align: top;">Поле</td>
+                    <td style="font-size: 14px; color: #1a1a1a; font-weight: 500; padding: 4px 0; vertical-align: top;">Футбольное поле №1</td>
+                  </tr>
+                  <tr>
+                    <td style="font-size: 13px; color: #6b7280; padding: 4px 0; vertical-align: top;">Дата</td>
+                    <td style="font-size: 14px; color: #1a1a1a; font-weight: 500; padding: 4px 0; vertical-align: top;">15 марта 2026</td>
+                  </tr>
+                  <tr>
+                    <td style="font-size: 13px; color: #6b7280; padding: 4px 0; vertical-align: top;">Время</td>
+                    <td style="font-size: 14px; color: #1a1a1a; font-weight: 500; padding: 4px 0; vertical-align: top;">10:00 – 11:00</td>
+                  </tr>
+                  <tr>
+                    <td style="font-size: 13px; color: #6b7280; padding: 4px 0; vertical-align: top;">Стоимость</td>
+                    <td style="font-size: 14px; color: #1a1a1a; font-weight: 600; padding: 4px 0; vertical-align: top;">2 000 &#8381;</td>
+                  </tr>
+                </table>
+              </div>
+              <div style="text-align: center; margin: 0 0 20px;">
+                <a href="#" style="display: inline-block; padding: 12px 32px; background-color: #2563eb; color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 8px; line-height: 1.4;">Мои бронирования</a>
+              </div>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0;">Ждём вас!</p>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="text-align: center; padding: 8px 24px 32px;">
+            <p style="font-size: 12px; color: #9ca3af; margin: 0 0 4px;">Walk&Play — площадки для спорта и отдыха</p>
+            <p style="font-size: 11px; color: #c0c0c0; margin: 0;">Это автоматическое письмо, не отвечайте на него</p>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ EMAIL 5: Бронирование отклонено ============ -->
+  <div class="email-label" id="email-5">
+    <div class="number">5</div>
+    <div class="meta">
+      <div class="title">Бронирование отклонено</div>
+      <span class="tag booking">Booking · NTF-02</span>
+    </div>
+  </div>
+  <div class="email-wrapper">
+    <div class="email-chrome">
+      <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      <div class="subject">Тема: <strong>Бронирование отклонено</strong></div>
+    </div>
+    <div style="background-color: #f5f5f5; padding: 0; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 520px; margin: 0 auto;">
+        <tr>
+          <td style="text-align: center; padding: 32px 24px 16px;">
+            <span style="font-size: 24px; font-weight: 700; color: #2563eb; letter-spacing: -0.5px;">Walk&Play</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 0 16px 24px;">
+            <div style="background: #ffffff; border-radius: 12px; padding: 32px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+              <h2 style="font-size: 20px; font-weight: 700; color: #1a1a1a; margin: 0 0 16px; line-height: 1.3;">Бронирование отклонено</h2>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 20px;">Здравствуйте, Иван!<br><br>К сожалению, ваше бронирование на площадке «Спортивный комплекс Олимп» было отклонено.</p>
+              <div style="background: #f8fafc; border-left: 3px solid #2563eb; border-radius: 8px; padding: 16px 20px; margin: 0 0 24px;">
+                <table cellpadding="0" cellspacing="0" width="100%">
+                  <tr>
+                    <td style="font-size: 13px; color: #6b7280; padding: 4px 0; width: 100px; vertical-align: top;">Поле</td>
+                    <td style="font-size: 14px; color: #1a1a1a; font-weight: 500; padding: 4px 0; vertical-align: top;">Футбольное поле №1</td>
+                  </tr>
+                  <tr>
+                    <td style="font-size: 13px; color: #6b7280; padding: 4px 0; vertical-align: top;">Дата</td>
+                    <td style="font-size: 14px; color: #1a1a1a; font-weight: 500; padding: 4px 0; vertical-align: top;">15 марта 2026</td>
+                  </tr>
+                  <tr>
+                    <td style="font-size: 13px; color: #6b7280; padding: 4px 0; vertical-align: top;">Время</td>
+                    <td style="font-size: 14px; color: #1a1a1a; font-weight: 500; padding: 4px 0; vertical-align: top;">10:00 – 11:00</td>
+                  </tr>
+                </table>
+              </div>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 24px;">Вы можете выбрать другое время на странице площадки.</p>
+              <div style="text-align: center; margin: 0;">
+                <a href="#" style="display: inline-block; padding: 12px 32px; background-color: #2563eb; color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 8px; line-height: 1.4;">Выбрать другое время</a>
+              </div>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="text-align: center; padding: 8px 24px 32px;">
+            <p style="font-size: 12px; color: #9ca3af; margin: 0 0 4px;">Walk&Play — площадки для спорта и отдыха</p>
+            <p style="font-size: 11px; color: #c0c0c0; margin: 0;">Это автоматическое письмо, не отвечайте на него</p>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ EMAIL 6: Бронирование отменено ============ -->
+  <div class="email-label" id="email-6">
+    <div class="number">6</div>
+    <div class="meta">
+      <div class="title">Бронирование отменено</div>
+      <span class="tag booking">Booking · NTF-02</span>
+    </div>
+  </div>
+  <div class="email-wrapper">
+    <div class="email-chrome">
+      <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      <div class="subject">Тема: <strong>Бронирование отменено</strong></div>
+    </div>
+    <div style="background-color: #f5f5f5; padding: 0; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 520px; margin: 0 auto;">
+        <tr>
+          <td style="text-align: center; padding: 32px 24px 16px;">
+            <span style="font-size: 24px; font-weight: 700; color: #2563eb; letter-spacing: -0.5px;">Walk&Play</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 0 16px 24px;">
+            <div style="background: #ffffff; border-radius: 12px; padding: 32px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+              <h2 style="font-size: 20px; font-weight: 700; color: #1a1a1a; margin: 0 0 16px; line-height: 1.3;">Бронирование отменено</h2>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 20px;">Здравствуйте, Иван!<br><br>Ваше бронирование на площадке «Спортивный комплекс Олимп» было отменено.</p>
+              <div style="background: #f8fafc; border-left: 3px solid #2563eb; border-radius: 8px; padding: 16px 20px; margin: 0 0 24px;">
+                <table cellpadding="0" cellspacing="0" width="100%">
+                  <tr>
+                    <td style="font-size: 13px; color: #6b7280; padding: 4px 0; width: 100px; vertical-align: top;">Поле</td>
+                    <td style="font-size: 14px; color: #1a1a1a; font-weight: 500; padding: 4px 0; vertical-align: top;">Футбольное поле №1</td>
+                  </tr>
+                  <tr>
+                    <td style="font-size: 13px; color: #6b7280; padding: 4px 0; vertical-align: top;">Дата</td>
+                    <td style="font-size: 14px; color: #1a1a1a; font-weight: 500; padding: 4px 0; vertical-align: top;">15 марта 2026</td>
+                  </tr>
+                  <tr>
+                    <td style="font-size: 13px; color: #6b7280; padding: 4px 0; vertical-align: top;">Время</td>
+                    <td style="font-size: 14px; color: #1a1a1a; font-weight: 500; padding: 4px 0; vertical-align: top;">10:00 – 11:00</td>
+                  </tr>
+                </table>
+              </div>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 24px;">Вы можете забронировать площадку на другое время.</p>
+              <div style="text-align: center; margin: 0;">
+                <a href="#" style="display: inline-block; padding: 12px 32px; background-color: #2563eb; color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 8px; line-height: 1.4;">Забронировать снова</a>
+              </div>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="text-align: center; padding: 8px 24px 32px;">
+            <p style="font-size: 12px; color: #9ca3af; margin: 0 0 4px;">Walk&Play — площадки для спорта и отдыха</p>
+            <p style="font-size: 11px; color: #c0c0c0; margin: 0;">Это автоматическое письмо, не отвечайте на него</p>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ EMAIL 7: Площадка одобрена ============ -->
+  <div class="email-label" id="email-7">
+    <div class="number">7</div>
+    <div class="meta">
+      <div class="title">Площадка одобрена</div>
+      <span class="tag moderation">Moderation · NTF-05</span>
+    </div>
+  </div>
+  <div class="email-wrapper">
+    <div class="email-chrome">
+      <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      <div class="subject">Тема: <strong>Ваша площадка «Спортивный комплекс Олимп» одобрена</strong></div>
+    </div>
+    <div style="background-color: #f5f5f5; padding: 0; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 520px; margin: 0 auto;">
+        <tr>
+          <td style="text-align: center; padding: 32px 24px 16px;">
+            <span style="font-size: 24px; font-weight: 700; color: #2563eb; letter-spacing: -0.5px;">Walk&Play</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 0 16px 24px;">
+            <div style="background: #ffffff; border-radius: 12px; padding: 32px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+              <h2 style="font-size: 20px; font-weight: 700; color: #1a1a1a; margin: 0 0 16px; line-height: 1.3;">Площадка одобрена</h2>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 8px;">Здравствуйте, Алексей!</p>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 16px;">Ваша площадка «Спортивный комплекс Олимп» прошла модерацию и опубликована на Walk&Play.</p>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 24px;">Теперь клиенты могут находить вашу площадку в каталоге и бронировать время.</p>
+              <div style="text-align: center; margin: 0;">
+                <a href="#" style="display: inline-block; padding: 12px 32px; background-color: #2563eb; color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 8px; line-height: 1.4;">Перейти в панель управления</a>
+              </div>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="text-align: center; padding: 8px 24px 32px;">
+            <p style="font-size: 12px; color: #9ca3af; margin: 0 0 4px;">Walk&Play — площадки для спорта и отдыха</p>
+            <p style="font-size: 11px; color: #c0c0c0; margin: 0;">Это автоматическое письмо, не отвечайте на него</p>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ EMAIL 8: Площадка отклонена ============ -->
+  <div class="email-label" id="email-8">
+    <div class="number">8</div>
+    <div class="meta">
+      <div class="title">Площадка отклонена</div>
+      <span class="tag moderation">Moderation · NTF-05</span>
+    </div>
+  </div>
+  <div class="email-wrapper">
+    <div class="email-chrome">
+      <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      <div class="subject">Тема: <strong>Площадка «Спортивный комплекс Олимп» требует доработки</strong></div>
+    </div>
+    <div style="background-color: #f5f5f5; padding: 0; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 520px; margin: 0 auto;">
+        <tr>
+          <td style="text-align: center; padding: 32px 24px 16px;">
+            <span style="font-size: 24px; font-weight: 700; color: #2563eb; letter-spacing: -0.5px;">Walk&Play</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 0 16px 24px;">
+            <div style="background: #ffffff; border-radius: 12px; padding: 32px 28px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+              <h2 style="font-size: 20px; font-weight: 700; color: #1a1a1a; margin: 0 0 16px; line-height: 1.3;">Площадка требует доработки</h2>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 20px;">Здравствуйте, Алексей!<br><br>Ваша площадка «Спортивный комплекс Олимп» не прошла модерацию.</p>
+              <div style="background: #fef9ee; border-left: 3px solid #f59e0b; border-radius: 8px; padding: 16px 20px; margin: 0 0 20px;">
+                <p style="font-size: 13px; color: #92400e; font-weight: 600; margin: 0 0 4px;">Комментарий модератора:</p>
+                <p style="font-size: 14px; color: #78350f; line-height: 1.5; margin: 0;">Необходимо добавить фотографии полей и указать актуальное расписание работы.</p>
+              </div>
+              <p style="font-size: 15px; color: #374151; line-height: 1.6; margin: 0 0 24px;">Пожалуйста, внесите необходимые изменения и отправьте площадку на повторную проверку.</p>
+              <div style="text-align: center; margin: 0;">
+                <a href="#" style="display: inline-block; padding: 12px 32px; background-color: #2563eb; color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 8px; line-height: 1.4;">Внести изменения</a>
+              </div>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="text-align: center; padding: 8px 24px 32px;">
+            <p style="font-size: 12px; color: #9ca3af; margin: 0 0 4px;">Walk&Play — площадки для спорта и отдыха</p>
+            <p style="font-size: 11px; color: #c0c0c0; margin: 0;">Это автоматическое письмо, не отвечайте на него</p>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

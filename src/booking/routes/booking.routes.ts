@@ -18,6 +18,7 @@ import {
 import { campaignRoleMiddleware } from '../../campaign/middleware/campaign.middleware';
 import { isValidUUID } from '../../utils/uuid';
 import { Errors, ErrorCode, handleError, sendError } from '../../utils/errors';
+import { notifyBookingStatusChanged } from '../../utils/bookingNotifications';
 import { validateSportTypes } from '../../utils/validators';
 
 export default function createBookingRoutes(db: Pool): Router {
@@ -662,6 +663,14 @@ export default function createBookingRoutes(db: Pool): Router {
 
       const result = await api.bulkUpdateBookingStatus(bookingIds, status);
 
+      // Notify each successfully updated booking
+      const failedSet = new Set(result.failed || []);
+      for (const id of bookingIds) {
+        if (!failedSet.has(id)) {
+          notifyBookingStatusChanged(db, id, status).catch(() => {});
+        }
+      }
+
       auditAPI.log({
         eventType: status === 'confirmed' ? AUDIT_EVENTS.BOOKING_BULK_CONFIRMED : AUDIT_EVENTS.BOOKING_BULK_REJECTED,
         actorId: req.userId!,
@@ -694,6 +703,7 @@ export default function createBookingRoutes(db: Pool): Router {
         if (!booking) {
           return Errors.notFound(res, 'Booking');
         }
+        notifyBookingStatusChanged(db, req.params.id, status).catch(() => {});
         res.json(booking);
       } catch (error) {
         handleError(res, error);
@@ -790,6 +800,15 @@ export default function createBookingRoutes(db: Pool): Router {
       }
 
       const result = await api.bulkUpdateBookingStatus(bookingIds, status);
+
+      // Notify each successfully updated booking
+      const adminFailedSet = new Set(result.failed || []);
+      for (const id of bookingIds) {
+        if (!adminFailedSet.has(id)) {
+          notifyBookingStatusChanged(db, id, status).catch(() => {});
+        }
+      }
+
       const eventMap: Record<string, string> = {
         confirmed: AUDIT_EVENTS.BOOKING_BULK_CONFIRMED,
         rejected: AUDIT_EVENTS.BOOKING_BULK_REJECTED,

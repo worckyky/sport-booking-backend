@@ -3,7 +3,7 @@ import { AuthAPI } from '../api/auth.api';
 import { BookingAPI } from '../../booking/api/booking.api';
 import jwt from 'jsonwebtoken';
 import type { Pool } from 'pg';
-import { AUTH_COOKIE_NAME, AUTH_TOKEN_TTL_SECONDS, getJwtSecret } from '../../config/auth';
+import { AUTH_COOKIE_NAME, AUTH_TOKEN_TTL_SECONDS, getJwtSecret, getAuthCookieOptions, getClearCookieOptions } from '../../config/auth';
 import {
   type AuthRequest,
   type ResetPasswordRequest,
@@ -38,12 +38,7 @@ export class AuthRoutes {
   }
 
   private setAuthCookie(res: Response, accessToken: string): void {
-    res.cookie(AUTH_COOKIE_NAME, accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: AUTH_TOKEN_TTL_SECONDS * 1000
-    });
+    res.cookie(AUTH_COOKIE_NAME, accessToken, getAuthCookieOptions());
   }
 
   private async getUserProfileById(userId: string): Promise<UserProfile | null> {
@@ -210,11 +205,7 @@ export class AuthRoutes {
         const data = await this.authAPI.signOut();
         
         // Удаляем cookie
-        res.clearCookie(AUTH_COOKIE_NAME, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict'
-        });
+        res.clearCookie(AUTH_COOKIE_NAME, getClearCookieOptions());
         
         res.json(data);
       } catch (error) {

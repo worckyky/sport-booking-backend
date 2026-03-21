@@ -6,7 +6,7 @@ import { adminMiddleware } from '../middleware/admin.middleware';
 import { campaignRoleMiddleware } from '../../campaign/middleware/campaign.middleware';
 import { canInviteMiddleware } from '../middleware/can-invite.middleware';
 import { USER_ROLE } from '../model/auth.model';
-import { AUTH_COOKIE_NAME, AUTH_TOKEN_TTL_SECONDS } from '../../config/auth';
+import { AUTH_COOKIE_NAME, getAuthCookieOptions } from '../../config/auth';
 import { validatePassword } from '../../utils/validators';
 
 export function createInvitationRoutes(db: Pool): Router {
@@ -63,13 +63,7 @@ export function createInvitationRoutes(db: Pool): Router {
       );
 
       // Устанавливаем auth cookie (как в signIn)
-      res.cookie(AUTH_COOKIE_NAME, result.accessToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: AUTH_TOKEN_TTL_SECONDS * 1000,
-        path: '/'
-      });
+      res.cookie(AUTH_COOKIE_NAME, result.accessToken, getAuthCookieOptions());
 
       res.json({
         id: result.id,
