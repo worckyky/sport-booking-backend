@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import compression from 'compression';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -129,6 +129,15 @@ async function start(): Promise<void> {
     });
   });
 
+
+  // Global error handler — hide stack traces in production
+  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+    console.error('Unhandled error:', err.message);
+    if (process.env.NODE_ENV !== 'production') {
+      console.error(err.stack);
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  });
 
   const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
