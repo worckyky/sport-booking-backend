@@ -21,9 +21,22 @@ import { toJsonbValue } from '../../utils/pg';
 import { normalizePhone } from '../../utils/phone';
 import { findOrCreateGuestUserInTransaction } from '../../utils/guest-user';
 import { S3API } from '../../s3/api/s3.api';
-
-// Типы для классификации изменений
-type FieldChangeType = 'COSMETIC' | 'BREAK_CHANGE' | 'SCHEDULE_CHANGE';
+import {
+  type FieldChangeType,
+  type WorkingTimetable,
+  timeToMinutes,
+  minutesToTime,
+  generateSlotsFromSchedule,
+  getDaySchedule,
+  classifyFieldChanges,
+  validateFieldWorkingHours,
+  validateFieldTimetableAgainstCampaign,
+  validateBreaks,
+  mapSlotsWithBookings,
+  STATUS_TRANSITIONS,
+  TIME_RESTRICTED_TRANSITIONS,
+  isValidTransition,
+} from './booking.helpers';
 
 // Структурированная ошибка конфликта расписания
 export interface ScheduleConflict {
@@ -65,16 +78,6 @@ export interface PaginatedResult<T> {
   };
 }
 
-interface WorkingTimetable {
-  monday?: { from: string; to: string };
-  tuesday?: { from: string; to: string };
-  wednesday?: { from: string; to: string };
-  thursday?: { from: string; to: string };
-  friday?: { from: string; to: string };
-  saturday?: { from: string; to: string };
-  sunday?: { from: string; to: string };
-}
-
 export class BookingAPI {
   private readonly s3API = new S3API();
 
@@ -95,56 +98,6 @@ export class BookingAPI {
     } finally {
       client.release();
     }
-  }
-
-  // ==================== CHANGE CLASSIFICATION ====================
-
-  /**
-   * Определяет тип изменения поля: COSMETIC | BREAK_CHANGE | SCHEDULE_CHANGE
-   * Приоритет: SCHEDULE_CHANGE > BREAK_CHANGE > COSMETIC
-   */
-  private classifyFieldChanges(current: Field, data: UpdateFieldRequest): FieldChangeType {
-    // slot_duration изменился → SCHEDULE_CHANGE
-    if (data.slot_duration !== undefined && data.slot_duration !== current.slot_duration) {
-      return 'SCHEDULE_CHANGE';
-    }
-
-    // working_timetable изменился — нужно детально сравнить
-    if (data.working_timetable !== undefined) {
-      const oldTT = current.working_timetable || {};
-      const newTT = data.working_timetable || {};
-      const days: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-
-      let onlyBreaksChanged = false;
-
-      for (const day of days) {
-        const oldDay = oldTT[day];
-        const newDay = newTT[day];
-
-        // День включён/выключен → SCHEDULE_CHANGE
-        const oldEnabled = oldDay !== null && oldDay !== undefined;
-        const newEnabled = newDay !== null && newDay !== undefined;
-        if (oldEnabled !== newEnabled) return 'SCHEDULE_CHANGE';
-
-        if (!oldEnabled || !newEnabled) continue;
-
-        // Часы работы изменились → SCHEDULE_CHANGE
-        if (oldDay!.from !== newDay!.from || oldDay!.to !== newDay!.to) {
-          return 'SCHEDULE_CHANGE';
-        }
-
-        // Перерывы изменились
-        const oldBreaks = JSON.stringify(oldDay!.breaks || []);
-        const newBreaks = JSON.stringify(newDay!.breaks || []);
-        if (oldBreaks !== newBreaks) {
-          onlyBreaksChanged = true;
-        }
-      }
-
-      if (onlyBreaksChanged) return 'BREAK_CHANGE';
-    }
-
-    return 'COSMETIC';
   }
 
   // ==================== SLOT MANAGEMENT ====================
@@ -254,151 +207,6 @@ export class BookingAPI {
     return timetable;
   }
 
-  private validateFieldWorkingHours(
-    fieldFrom: string | null | undefined,
-    fieldTo: string | null | undefined,
-    campaignTimetable: WorkingTimetable
-  ): void {
-    if (!fieldFrom || !fieldTo) return; // Если время поля не задано, пропускаем
-
-    // Получаем минимальное/максимальное время работы кампании
-    const campaignHours: { from: string; to: string }[] = [];
-    const days: (keyof WorkingTimetable)[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-
-    for (const day of days) {
-      const schedule = campaignTimetable[day];
-      if (schedule?.from && schedule?.to) {
-        campaignHours.push({ from: schedule.from, to: schedule.to });
-      }
-    }
-
-    if (campaignHours.length === 0) return; // Нет расписания кампании
-
-    // Находим самое раннее открытие и самое позднее закрытие
-    const earliestOpen = campaignHours.reduce((min, h) => h.from < min ? h.from : min, '23:59');
-    const latestClose = campaignHours.reduce((max, h) => h.to > max ? h.to : max, '00:00');
-
-    // Проверяем, что время поля не выходит за рамки
-    if (fieldFrom < earliestOpen) {
-      throw new Error(`Время начала работы поля (${fieldFrom}) не может быть раньше открытия площадки (${earliestOpen})`);
-    }
-    if (fieldTo > latestClose) {
-      throw new Error(`Время окончания работы поля (${fieldTo}) не может быть позже закрытия площадки (${latestClose})`);
-    }
-  }
-
-  private validateFieldTimetableAgainstCampaign(
-    fieldTimetable: FieldWorkingTimetable,
-    campaignTimetable: WorkingTimetable,
-    slotDuration?: number
-  ): void {
-    const days: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-
-    for (const day of days) {
-      const fieldDay = fieldTimetable[day];
-      const campaignDay = campaignTimetable[day];
-
-      if (!fieldDay) continue; // выходной у поля - OK
-      if (!campaignDay) {
-        throw new Error(`Поле не может работать в ${day}, когда площадка закрыта`);
-      }
-
-      if (fieldDay.from < campaignDay.from) {
-        throw new Error(`Время начала работы поля (${fieldDay.from}) в ${day} не может быть раньше открытия площадки (${campaignDay.from})`);
-      }
-      if (fieldDay.to > campaignDay.to) {
-        throw new Error(`Время окончания работы поля (${fieldDay.to}) в ${day} не может быть позже закрытия площадки (${campaignDay.to})`);
-      }
-
-      // Валидация перерывов (с проверкой grid alignment если slotDuration известен)
-      if (fieldDay.breaks) {
-        this.validateBreaks(fieldDay, slotDuration);
-      }
-    }
-  }
-
-  private validateBreaks(schedule: FieldDaySchedule, slotDuration?: number): void {
-    const breaks = schedule.breaks || [];
-    const workStart = this.timeToMinutes(schedule.from);
-    const workEnd = this.timeToMinutes(schedule.to);
-
-    for (const brk of breaks) {
-      const brkStart = this.timeToMinutes(brk.from);
-      const brkEnd = this.timeToMinutes(brk.to);
-
-      if (brkStart >= brkEnd) {
-        throw new Error(`Время начала перерыва (${brk.from}) должно быть раньше времени окончания (${brk.to})`);
-      }
-      if (brkStart < workStart || brkEnd > workEnd) {
-        throw new Error(`Перерыв (${brk.from}-${brk.to}) должен быть в пределах рабочего времени (${schedule.from}-${schedule.to})`);
-      }
-
-      // Проверка grid alignment: перерыв должен совпадать с границами слотов
-      if (slotDuration && slotDuration > 0) {
-        const startOffset = (brkStart - workStart) % slotDuration;
-        const endOffset = (brkEnd - workStart) % slotDuration;
-
-        if (startOffset !== 0 || endOffset !== 0) {
-          const nearestStart = startOffset !== 0
-            ? this.minutesToTime(brkStart - startOffset)
-            : brk.from;
-          const nearestEnd = endOffset !== 0
-            ? this.minutesToTime(brkEnd + (slotDuration - endOffset))
-            : brk.to;
-          throw new Error(
-            `Перерыв ${brk.from}-${brk.to} не совпадает с сеткой слотов (шаг ${slotDuration} мин от ${schedule.from}). Ближайшие допустимые: ${nearestStart}-${nearestEnd}`
-          );
-        }
-      }
-    }
-
-    // Проверка на пересечение перерывов между собой
-    for (let i = 0; i < breaks.length; i++) {
-      for (let j = i + 1; j < breaks.length; j++) {
-        const a = { start: this.timeToMinutes(breaks[i].from), end: this.timeToMinutes(breaks[i].to) };
-        const b = { start: this.timeToMinutes(breaks[j].from), end: this.timeToMinutes(breaks[j].to) };
-        if (a.start < b.end && a.end > b.start) {
-          throw new Error(`Перерывы не должны пересекаться: ${breaks[i].from}-${breaks[i].to} и ${breaks[j].from}-${breaks[j].to}`);
-        }
-      }
-    }
-  }
-
-  private getDaySchedule(
-    field: Field,
-    date: Date,
-    campaignTimetable?: WorkingTimetable | null
-  ): FieldDaySchedule | null {
-    const dayNames: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const dayOfWeek = dayNames[date.getDay()];
-
-    // 1. Приоритет: working_timetable поля
-    if (field.working_timetable && dayOfWeek in field.working_timetable) {
-      const schedule = field.working_timetable[dayOfWeek];
-      return schedule ?? null; // null = выходной
-    }
-
-    // 2. Fallback: старые поля working_hours_from/to
-    if (field.working_hours_from && field.working_hours_to) {
-      const shortDayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-      const shortDay = shortDayNames[date.getDay()];
-      if (field.working_days?.includes(shortDay)) {
-        return { from: field.working_hours_from, to: field.working_hours_to };
-      }
-      return null; // выходной
-    }
-
-    // 3. Fallback: расписание кампании
-    if (campaignTimetable && dayOfWeek in campaignTimetable) {
-      const campaignDay = campaignTimetable[dayOfWeek];
-      if (campaignDay) {
-        return { from: campaignDay.from, to: campaignDay.to };
-      }
-    }
-
-    return null; // нет расписания
-  }
-
   // ==================== FIELDS ====================
 
   async getFieldsByCampaign(campaignId: string): Promise<Field[]> {
@@ -423,10 +231,10 @@ export class BookingAPI {
     if (campaignTimetable) {
       // Валидация нового формата working_timetable (с проверкой grid alignment)
       if (data.working_timetable) {
-        this.validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable, data.slot_duration || 60);
+        validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable, data.slot_duration || 60);
       }
       // Валидация legacy формата
-      this.validateFieldWorkingHours(data.working_hours_from, data.working_hours_to, campaignTimetable);
+      validateFieldWorkingHours(data.working_hours_from, data.working_hours_to, campaignTimetable);
     }
 
     // Фото идут в pending_photos (премодерация), photos остаётся пустым
@@ -497,8 +305,8 @@ export class BookingAPI {
       const schedule = newTimetable[dayOfWeek];
 
       // Если в этот день выходной или слот не вписывается в рабочее время
-      const slotStart = this.timeToMinutes(row.start_time);
-      const slotEnd = this.timeToMinutes(row.end_time);
+      const slotStart = timeToMinutes(row.start_time);
+      const slotEnd = timeToMinutes(row.end_time);
 
       let isConflict = false;
 
@@ -506,8 +314,8 @@ export class BookingAPI {
         // День стал выходным
         isConflict = true;
       } else {
-        const workStart = this.timeToMinutes(schedule.from);
-        const workEnd = this.timeToMinutes(schedule.to);
+        const workStart = timeToMinutes(schedule.from);
+        const workEnd = timeToMinutes(schedule.to);
 
         // Слот выходит за рамки рабочего времени
         if (slotStart < workStart || slotEnd > workEnd) {
@@ -517,8 +325,8 @@ export class BookingAPI {
         // Слот попадает в перерыв
         if (!isConflict && schedule.breaks) {
           for (const brk of schedule.breaks) {
-            const brkStart = this.timeToMinutes(brk.from);
-            const brkEnd = this.timeToMinutes(brk.to);
+            const brkStart = timeToMinutes(brk.from);
+            const brkEnd = timeToMinutes(brk.to);
             if (slotStart < brkEnd && slotEnd > brkStart) {
               isConflict = true;
               break;
@@ -621,16 +429,16 @@ export class BookingAPI {
       const dayOfWeek = dayNames[date.getDay()];
       const schedule = newTimetable[dayOfWeek];
 
-      const slotStart = this.timeToMinutes(row.start_time);
-      const slotEnd = this.timeToMinutes(row.end_time);
+      const slotStart = timeToMinutes(row.start_time);
+      const slotEnd = timeToMinutes(row.end_time);
 
       let shouldDelete = false;
 
       if (!schedule) {
         shouldDelete = true;
       } else {
-        const workStart = this.timeToMinutes(schedule.from);
-        const workEnd = this.timeToMinutes(schedule.to);
+        const workStart = timeToMinutes(schedule.from);
+        const workEnd = timeToMinutes(schedule.to);
 
         if (slotStart < workStart || slotEnd > workEnd) {
           shouldDelete = true;
@@ -638,8 +446,8 @@ export class BookingAPI {
 
         if (!shouldDelete && schedule.breaks) {
           for (const brk of schedule.breaks) {
-            const brkStart = this.timeToMinutes(brk.from);
-            const brkEnd = this.timeToMinutes(brk.to);
+            const brkStart = timeToMinutes(brk.from);
+            const brkEnd = timeToMinutes(brk.to);
             if (slotStart < brkEnd && slotEnd > brkStart) {
               shouldDelete = true;
               break;
@@ -679,11 +487,11 @@ export class BookingAPI {
       if (campaignTimetable) {
         if (data.working_timetable !== undefined && data.working_timetable !== null) {
           const effectiveSlotDuration = data.slot_duration || currentField.slot_duration || 60;
-          this.validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable, effectiveSlotDuration);
+          validateFieldTimetableAgainstCampaign(data.working_timetable, campaignTimetable, effectiveSlotDuration);
         }
         const newFrom = data.working_hours_from !== undefined ? data.working_hours_from : currentField.working_hours_from;
         const newTo = data.working_hours_to !== undefined ? data.working_hours_to : currentField.working_hours_to;
-        this.validateFieldWorkingHours(newFrom, newTo, campaignTimetable);
+        validateFieldWorkingHours(newFrom, newTo, campaignTimetable);
       }
     }
 
@@ -713,7 +521,7 @@ export class BookingAPI {
     }
 
     // 3. Классификация типа изменения
-    const changeType = this.classifyFieldChanges(currentField, data);
+    const changeType = classifyFieldChanges(currentField, data);
 
     // 4. Проверка конфликтов в зависимости от типа изменения
     if (changeType === 'SCHEDULE_CHANGE') {
@@ -1082,7 +890,7 @@ export class BookingAPI {
     // Для прошлых дат — возвращаем только существующие (история)
     if (isPastDate) {
       return existingSlots.rows.length > 0
-        ? this.mapSlotsWithBookings(existingSlots.rows)
+        ? mapSlotsWithBookings(existingSlots.rows)
         : [];
     }
 
@@ -1090,21 +898,21 @@ export class BookingAPI {
     const campaignTimetable = await this.getCampaignWorkingTimetable(field.campaign_id);
 
     // Получаем расписание на конкретный день (с учетом fallback логики)
-    const daySchedule = this.getDaySchedule(field, requestedDate, campaignTimetable);
+    const daySchedule = getDaySchedule(field, requestedDate, campaignTimetable);
 
     if (!daySchedule) {
       // Выходной — возвращаем существующие (если seed создал)
       return existingSlots.rows.length > 0
-        ? this.mapSlotsWithBookings(existingSlots.rows)
+        ? mapSlotsWithBookings(existingSlots.rows)
         : [];
     }
 
     // Генерируем полный набор слотов по расписанию
-    const slots = this.generateSlotsFromSchedule(daySchedule, field.slot_duration || 60);
+    const slots = generateSlotsFromSchedule(daySchedule, field.slot_duration || 60);
 
     if (slots.length === 0) {
       return existingSlots.rows.length > 0
-        ? this.mapSlotsWithBookings(existingSlots.rows)
+        ? mapSlotsWithBookings(existingSlots.rows)
         : [];
     }
 
@@ -1164,7 +972,7 @@ export class BookingAPI {
       [fieldId, date]
     );
 
-    return this.mapSlotsWithBookings(allSlots.rows);
+    return mapSlotsWithBookings(allSlots.rows);
   }
 
   /**
@@ -1172,80 +980,6 @@ export class BookingAPI {
    * Слоты всегда идут от `from` с шагом `slotDuration`.
    * Перерывы НЕ сдвигают сетку — слоты в перерыве помечаются как заблокированные.
    */
-  private generateSlotsFromSchedule(
-    schedule: FieldDaySchedule,
-    slotDuration: number
-  ): Array<{ start_time: string; end_time: string; is_blocked: boolean; block_reason: string | null }> {
-    const slots: Array<{ start_time: string; end_time: string; is_blocked: boolean; block_reason: string | null }> = [];
-
-    const startMinutes = this.timeToMinutes(schedule.from);
-    const endMinutes = this.timeToMinutes(schedule.to);
-    const sortedBreaks = (schedule.breaks || [])
-      .map(b => ({ start: this.timeToMinutes(b.from), end: this.timeToMinutes(b.to) }))
-      .sort((a, b) => a.start - b.start);
-
-    // Фиксированная сетка: ровный шаг от начала, без прыжков
-    for (let current = startMinutes; current + slotDuration <= endMinutes; current += slotDuration) {
-      const slotEnd = current + slotDuration;
-
-      // Проверяем пересечение с любым перерывом
-      const overlapsBreak = sortedBreaks.some(b => current < b.end && slotEnd > b.start);
-
-      slots.push({
-        start_time: this.minutesToTime(current),
-        end_time: this.minutesToTime(slotEnd),
-        is_blocked: overlapsBreak,
-        block_reason: overlapsBreak ? 'break' : null,
-      });
-    }
-
-    return slots;
-  }
-
-  // DEPRECATED: legacy метод для обратной совместимости
-  private generateSlots(field: Field): Array<{ start_time: string; end_time: string; is_blocked: boolean; block_reason: string | null }> {
-    if (!field.working_hours_from || !field.working_hours_to) {
-      return [];
-    }
-
-    return this.generateSlotsFromSchedule(
-      { from: field.working_hours_from, to: field.working_hours_to },
-      field.slot_duration || 60
-    );
-  }
-
-  private timeToMinutes(time: string): number {
-    const [hours, minutes] = time.split(':').map(Number);
-    return hours * 60 + (minutes || 0);
-  }
-
-  private minutesToTime(minutes: number): string {
-    const h = Math.floor(minutes / 60);
-    const m = minutes % 60;
-    return h.toString().padStart(2, '0') + ':' + m.toString().padStart(2, '0');
-  }
-
-  private mapSlotsWithBookings(rows: any[]): SlotWithBooking[] {
-    return rows.map(row => ({
-      id: row.id,
-      field_id: row.field_id,
-      date: typeof row.date === 'object' ? row.date.toISOString().split('T')[0] : row.date,
-      start_time: row.start_time,
-      end_time: row.end_time,
-      is_blocked: row.is_blocked || false,
-      block_reason: row.block_reason || null,
-      created_at: row.created_at,
-      booking: row.booking_id ? {
-        id: row.booking_id,
-        user_id: row.booking_user_id,
-        status: row.booking_status,
-        user_name: row.user_name || null,
-        user_phone: row.user_phone || null,
-        is_registered: row.is_registered === true,
-      } : null
-    }));
-  }
-
   async createSlot(data: CreateSlotRequest): Promise<BookingSlot> {
     // Проверяем пересечение времени
     const overlap = await this.db.query(
@@ -1762,35 +1496,6 @@ export class BookingAPI {
     });
   }
 
-  /**
-   * Матрица валидных переходов между статусами
-   * Ключ - текущий статус, значение - массив допустимых целевых статусов
-   */
-  private static readonly STATUS_TRANSITIONS: Record<BookingStatus, BookingStatus[]> = {
-    pending: ['confirmed', 'rejected', 'expired', 'cancelled_by_client', 'cancelled_by_admin'],
-    confirmed: ['completed', 'cancelled_by_client', 'cancelled_by_facility', 'cancelled_by_admin', 'no_show'],
-    completed: ['no_show', 'cancelled_by_admin'],
-    no_show: ['cancelled_by_admin'],
-    rejected: ['cancelled_by_admin'],
-    expired: ['cancelled_by_admin'],
-    cancelled_by_client: ['cancelled_by_admin'],
-    cancelled_by_facility: ['cancelled_by_admin'],
-    cancelled_by_admin: [],
-  };
-
-  /**
-   * Переходы, требующие проверки времени слота
-   */
-  private static readonly TIME_RESTRICTED_TRANSITIONS: Record<string, 'before_start' | 'after_start'> = {
-    'pending->confirmed': 'before_start',
-    'pending->rejected': 'before_start',
-    'pending->cancelled_by_client': 'before_start',
-    'confirmed->cancelled_by_client': 'before_start',
-    'confirmed->cancelled_by_facility': 'before_start',
-    'confirmed->no_show': 'after_start',
-    'completed->no_show': 'after_start',
-  };
-
   async updateBookingStatus(bookingId: string, newStatus: BookingStatus): Promise<Booking | null> {
     // Получаем текущее бронирование с данными слота и таймзоной площадки
     const bookingWithSlot = await this.db.query<{
@@ -1816,14 +1521,14 @@ export class BookingAPI {
     const { booking_status: currentStatus, slot_date, start_time, timezone_id } = bookingWithSlot.rows[0];
 
     // Проверяем валидность перехода
-    const allowedTransitions = BookingAPI.STATUS_TRANSITIONS[currentStatus];
+    const allowedTransitions = STATUS_TRANSITIONS[currentStatus];
     if (!allowedTransitions.includes(newStatus)) {
       throw new Error(`Invalid status transition: ${currentStatus} -> ${newStatus}`);
     }
 
     // Проверяем временные ограничения
     const transitionKey = `${currentStatus}->${newStatus}`;
-    const timeRestriction = BookingAPI.TIME_RESTRICTED_TRANSITIONS[transitionKey];
+    const timeRestriction = TIME_RESTRICTED_TRANSITIONS[transitionKey];
 
     if (timeRestriction) {
       // Проверяем через SQL с использованием таймзоны площадки
