@@ -1,5 +1,5 @@
 # Build stage
-FROM node:18-alpine AS builder
+FROM node:20-alpine AS builder
 
 # Set working directory
 WORKDIR /app
@@ -22,7 +22,7 @@ COPY migrations ./migrations
 RUN npm run build
 
 # Production stage
-FROM node:18-alpine AS production
+FROM node:20-alpine AS production
 
 # Set working directory
 WORKDIR /app
@@ -52,8 +52,10 @@ USER nextjs
 EXPOSE 3001
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3001/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"
+# Use IPv4 loopback explicitly and handle connection errors to avoid false negatives
+# when localhost resolves to ::1.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
+  CMD node -e "const http=require('http');const req=http.get('http://127.0.0.1:3001/health',(res)=>{process.exit(res.statusCode===200?0:1)});req.on('error',()=>process.exit(1));"
 
 # Start the application
 CMD ["npm", "start"]
