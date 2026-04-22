@@ -22,6 +22,10 @@ import createS3Routes from './s3/routes/s3.routes';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Coolify runs apps behind a reverse proxy (Traefik), so Express should trust
+// forwarded headers to correctly identify client IPs for rate limiting.
+app.set('trust proxy', 1);
+
 // Middleware
 // Security headers
 app.use(helmet());

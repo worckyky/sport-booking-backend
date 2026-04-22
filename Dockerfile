@@ -17,6 +17,7 @@ RUN npm ci --include=dev
 # Copy source code
 COPY src ./src
 COPY migrations ./migrations
+COPY seeds ./seeds
 
 # Build TypeScript
 RUN npm run build
@@ -36,6 +37,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/migrations ./migrations
+COPY --from=builder /app/seeds ./seeds
 
 # Copy swagger specification directly from source
 COPY src/specification ./dist/specification
