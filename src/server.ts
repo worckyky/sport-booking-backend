@@ -29,17 +29,14 @@ app.use(helmet());
 app.use(compression());
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',')
+  ? process.env.ALLOWED_ORIGINS.split(',').map((origin) => origin.trim())
   : ['http://localhost:3000'];
 
 app.use(cors({
   origin: (origin, callback) => {
-    // In production, reject requests without Origin header (security)
-    // In dev, allow for Postman/curl/Swagger
+    // Allow non-browser requests (health checks, server-to-server, curl).
+    // They often do not include Origin and are not subject to browser CORS.
     if (!origin) {
-      if (process.env.NODE_ENV === 'production') {
-        return callback(new Error('Origin header required'));
-      }
       return callback(null, true);
     }
 
